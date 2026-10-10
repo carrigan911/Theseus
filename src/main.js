@@ -321,7 +321,7 @@ function testShots() {
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 // the pages' titles say Theseus: every window shows the assistant's name instead
-app.on('browser-window-created', (_e, w) => w.on('page-title-updated', (ev, t) => { ev.preventDefault(); w.setTitle(t.replace(/^Theseus/, NAME())); }));
+app.on('browser-window-created', (_e, w) => w.on('page-title-updated', (ev, t) => { ev.preventDefault(); w.setTitle(t.replace(/^Theseus\b/, NAME())); }));
 if (gotLock) app.whenReady().then(() => {
   zorder.send({ cmd: 'ping' });                // warm the z-order helper before the window needs it
   loadSettings(); setAutostart();            // keeps the login item in step with the setting (and with this folder)
@@ -420,7 +420,7 @@ if (gotLock) app.whenReady().then(() => {
     if ('autostart' in patch) setAutostart();
     if (patch.claudeTray === true) hideClaude();
     if ('name' in patch && tray) tray.setToolTip(NAME());
-    if ('name' in patch) for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setTitle(w.webContents.getTitle().replace(/^Theseus/, NAME()));
+    if ('name' in patch) for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setTitle(w.webContents.getTitle().replace(/^Theseus\b/, NAME()));
     pushSettings(); onSettingsChanged(patch);
     rebuild();
     return uiSettings();
