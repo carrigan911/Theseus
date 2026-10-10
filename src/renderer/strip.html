@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Theseus strip</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<style>
+  :root { --bg: #121211; --card: #1c1c1b; --line: #2b2a28; --text: #ecebe6; --dim: #9a978f; --accent: #d97757; --red: #ef5350; --yellow: #e0b341; --green: #4caf7a; }
+  html, body { margin: 0; background: transparent; overflow: hidden; color: var(--text); font: 12px/1 "Segoe UI", system-ui, sans-serif; user-select: none; cursor: default; }
+  body { width: max-content; height: 39px; }   /* the window is 39 px high (Windows minimum); the pill is 28 */
+  body.toast { height: auto; padding: 0; }
+  .pill { display: inline-flex; align-items: center; gap: 2px; height: 26px; margin: 1px; padding: 0 6px; box-sizing: border-box; white-space: nowrap;
+    background: rgba(28, 28, 27, .97); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 2px 10px rgba(0, 0, 0, .45); }
+  .it { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border: 0; border-radius: 10px; background: none; color: var(--text); font: inherit; cursor: pointer; }
+  .it:hover { background: #2b2a28; }
+  .sep { width: 1px; height: 14px; background: var(--line); margin: 0 3px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px currentColor; color: var(--accent); }
+  .pend { color: var(--dim); }
+  #outName { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+  svg { display: block; }
+  #mic { position: relative; color: var(--text); }
+  #mic .slash { display: none; }
+  #mic.muted { color: var(--red); } #mic.muted .slash { display: block; }
+  #mic.listening { color: var(--accent); background: rgba(217, 119, 87, .18); animation: glow 1s ease-in-out infinite; }
+  @keyframes glow { 0%, 100% { box-shadow: 0 0 2px rgba(217, 119, 87, .4); } 50% { box-shadow: 0 0 10px 2px rgba(217, 119, 87, .85); } }
+  #rec { color: var(--dim); font-weight: 600; letter-spacing: .04em; }
+  #rec i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  #rec.on { color: var(--red); background: rgba(239, 83, 80, .14); } #rec.on i { animation: blink 1s steps(2, start) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  #timer { font-variant-numeric: tabular-nums; }
+  #meters { display: none; flex-direction: column; justify-content: center; gap: 3px; width: 30px; margin: 0 4px 0 2px; }
+  #meters.on { display: flex; }
+  #meters i { display: block; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .1); overflow: hidden; }
+  #meters b { display: block; height: 100%; width: 100%; background: var(--green); transform-origin: 0 50%; transform: scaleX(0); transition: transform .09s linear; }
+  #meters b.hot { background: var(--yellow); } #meters b.clip { background: var(--red); }
+  #meters i.off { opacity: .35; }
+  #replay { color: var(--dim); letter-spacing: .04em; font-size: 11px; }
+  #replay.on { color: var(--accent); }
+  #sys { color: var(--dim); padding: 0 7px; } #sys.yellow { color: var(--yellow); } #sys.red { color: var(--red); }
+  #note { display: none; padding: 0 12px; line-height: 24px; color: var(--text); }
+  .pill.noticing { border-color: var(--accent); } .pill.noticing > :not(#note) { display: none; } .pill.noticing #note { display: block; }
+  .unavail { opacity: .4; }
+  /* toast window (notice when the strip is off) and the on-demand readout card */
+  #toast { display: none; }
+  body.toast #bar { display: none; } body.toast #toast { display: inline-block; }
+  #toast .pill { height: auto; min-height: 26px; }
+  #toast .pill.notice { border-color: var(--accent); padding: 0 14px; line-height: 24px; font-size: 12px; }
+  #toast .pill.card { flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 14px 11px; border-radius: 12px; font-size: 13px; line-height: 1.25; min-width: 250px; }
+  #toast .head { display: flex; justify-content: space-between; align-items: center; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+  #toast .grid { display: grid; grid-template-columns: auto auto; gap: 4px 22px; }
+  #toast .grid b { font-weight: 400; color: var(--dim); } #toast .grid span { text-align: right; font-variant-numeric: tabular-nums; }
+  #toast .reds { color: var(--red); font-size: 12px; }
+  .lvl { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; background: var(--green); } .lvl.yellow { background: var(--yellow); } .lvl.red { background: var(--red); }
+</style>
+</head>
+<body>
+<div id="bar" class="pill">
+  <button class="it" data-act="mode" id="modeBtn" title="Theseus mode (click: change)"><i class="dot" id="modeDot"></i><span id="modeName">-</span></button>
+  <b class="sep"></b>
+  <button class="it" data-act="out" id="out" title="Output (click: next, right-click: choose)">
+    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg>
+    <span id="outName">-</span></button>
+  <button class="it" data-act="mic" id="mic" title="Microphone (click: mute, right-click: choose)">
+    <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/><path class="slash" d="M4 4l16 16" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
+  <b class="sep"></b>
+  <button class="it" data-act="rec" id="rec" title="Record (click: start / stop)"><i></i><span>REC</span><span id="timer"></span></button>
+  <span id="meters" title="Levels while recording: top = microphone, bottom = system sound"><i id="mMic"><b></b></i><i id="mSys"><b></b></i></span>
+  <button class="it" data-act="replay" id="replay" title="Replay buffer (click: on / off)">REPLAY</button>
+  <span id="sys" style="display:none"></span>
+  <span id="note"></span>
+</div>
+<div id="toast"></div>
+<script src="strip.js"></script>
+</body>
+</html>

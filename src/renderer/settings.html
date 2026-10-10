@@ -1,0 +1,484 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Theseus settings</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<style>
+  :root { --bg: #121211; --card: #1c1c1b; --line: #2b2a28; --text: #ecebe6; --dim: #9a978f; --accent: #d97757; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 18px 18px 24px; background: var(--bg); color: var(--text); font: 14px/1.4 "Segoe UI", system-ui, sans-serif; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 14px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 9px; padding: 6px 14px; margin-bottom: 12px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 600; margin: 8px 0 2px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); }
+  h2 + .row { border-top: 0; }
+  .row label { flex: 1; }
+  .row small { display: block; color: var(--dim); font-size: 12px; }
+  select, input[type=number], input[type=password], input[type=text] { background: #262624; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 130px; }
+  input[type=color] { width: 54px; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: #262624; padding: 2px; }
+  input[type=range] { width: 130px; accent-color: var(--accent); }
+  input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  .mrow { display: flex; gap: 8px; align-items: center; } .mrow input[type=number] { min-width: 0; width: 62px; }
+  #cycleList { flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 2px 10px; }
+  #cycleList h3 { grid-column: 1 / -1; margin: 6px 0 0; font-size: 12px; font-weight: 600; color: var(--dim); }
+  #cycleList label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .cyc { flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 3px 10px; }
+  .cyc label { display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
+  .cyc:empty::after { content: "No devices listed"; color: var(--dim); font-size: 12px; }
+  small.path { word-break: break-all; }
+  .tf { flex: 1; display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  .row .tf label { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  button:disabled { opacity: .4; cursor: default; }
+  #wearThumbs, #swapThumbs { display: flex; gap: 6px; width: 100%; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+  #wearThumbs button, #swapThumbs button { flex: 0 0 calc((100% - 30px) / 6); background: #262624; border: 1px solid var(--line); border-radius: 7px; padding: 3px 2px 4px; color: var(--dim); font-size: 11px; line-height: 1.2; min-width: 0; }
+  #wearThumbs::-webkit-scrollbar, #swapThumbs::-webkit-scrollbar { height: 6px; } #wearThumbs::-webkit-scrollbar-track, #swapThumbs::-webkit-scrollbar-track { background: transparent; } #wearThumbs::-webkit-scrollbar-thumb, #swapThumbs::-webkit-scrollbar-thumb { background: #3a3a37; border-radius: 3px; }
+  #wearThumbs button.on, #swapThumbs button.on { border-color: var(--accent); color: var(--text); }
+  #wearThumbs img, #swapThumbs img { display: block; width: 100%; aspect-ratio: 150 / 130; object-fit: contain; }
+  #tilePrev { width: 100%; height: 190px; }
+  button.rec.on { background: #c0392b; }
+  .val { color: var(--dim); font-size: 12px; min-width: 34px; text-align: right; }
+  /* card mode: shown over the sphere's panel like the chat card */
+  html.card { background: transparent; height: 100%; overflow: hidden; }   /* body scrolls inside its rounded border */
+  html.card body { height: 100vh; overflow: auto; border: 1px solid var(--line); border-radius: 14px; scrollbar-width: thin; scrollbar-color: #3d3c38 transparent; }
+  input.pth { width: 230px; } .ast.on { color: #7fc77f; } .ast.miss { color: #d9a35b; } .addoff { display: none !important; }
+  .warn { color: #d9a35b; }
+</style>
+</head>
+<body>
+<script>if (new URLSearchParams(location.search).has('card')) { document.documentElement.classList.add('card'); addEventListener('keydown', e => { if (e.key === 'Escape') window.sphere.overlayClose(); }); }</script>
+<h1 id="title">Theseus</h1>
+
+<!-- data-card: which bar card shows the section (General = centre button, Theseus = right); the plain window shows all -->
+<section data-card="general">
+  <h2>Display</h2>
+  <div class="row"><label>Sphere size<small>How big the sphere is on the screen</small></label>
+    <select data-k="sphereSize"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option><option value="xlarge">Extra large</option></select></div>
+  <div class="row"><label>Sphere growth<small>The sphere grows as sessions are added. Off: it stays at the chosen size, and empty tiles fill the spots without a session</small></label><input type="checkbox" data-k="sphereGrowth"></div>
+  <div class="row"><label>Empty spots<small>Spots without a session: an empty tile, or open (no tile, the core shows through)</small></label>
+    <select data-k="emptySpots"><option value="tiles">Empty tiles</option><option value="open">Open</option></select></div>
+  <div class="row"><label>Tile resolution<small>Sharpness of the text on the tiles</small></label>
+    <select data-k="labelRes" data-num><option value="512">Low (512)</option><option value="1024">Medium (1024)</option><option value="2048">High (2048)</option><option value="4096">Ultra (4096)</option></select></div>
+  <div class="row"><label>Render quality<small>Supersampling of the whole sphere</small></label>
+    <select data-k="renderScale" data-num><option value="1">1x</option><option value="1.5">1.5x</option><option value="2">2x</option><option value="3">3x</option></select></div>
+  <div class="row"><label>Frame rate<small>Higher is smoother, uses more GPU</small></label>
+    <select data-k="fps" data-num><option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option><option value="120">120 fps</option><option value="0">Display rate</option></select></div>
+  <div class="row"><label>Row tile size<small>Size of the tiles when spread out in rows (Large: the biggest that fit)</small></label>
+    <select data-k="rowTileSize"><option value="large">Large</option><option value="medium">Medium</option><option value="small">Small</option></select></div>
+  <div class="row"><label>Tile alignment<small>How the rows of tiles line up when spread out</small></label>
+    <select data-k="tileAlign"><option value="left">Left</option><option value="center">Middle</option><option value="right">Right</option></select></div>
+  <div class="row"><label>Tile shape<small>All hexagons: every tile is a hexagon, on the sphere too (its 12 pentagon spots hold energy cells)</small></label>
+    <select data-k="flatShape"><option value="regular">As on the sphere</option><option value="hexagon">All hexagons</option></select></div>
+  <div class="row"><label>Screen area</label>
+    <select data-k="side"><option value="left">Left half</option><option value="right">Right half</option><option value="full">Full screen</option></select></div>
+  <div class="row"><label>Monitor</label><select data-k="display" id="display"><option value="primary">Main monitor</option></select></div>
+  <div class="row"><label>Rotation<small>Minutes per turn of the sphere (0 = still)</small></label><input type="number" min="0" max="30" step="0.5" data-k="spinMinutes" data-num></div>
+</section>
+
+<section data-card="general">
+  <h2>Background</h2>
+  <div class="row"><label>Style<small>What shows behind the sphere: while the rows are spread out, or all the time with Always visible</small></label>
+    <select data-k="bgStyle"><option value="none">None</option><option value="black">Black</option><option value="space">Space</option><option value="moving">Moving space</option><option value="gradient">Flowing gradient</option><option value="travel">Space travel</option></select></div>
+  <div class="row"><label>Opacity<small>How much of the desktop shows through (100 = none)</small></label><input type="range" min="0" max="100" step="5" data-k="bgOpacity" data-num><span class="val"></span></div>
+  <div class="row"><label>Always visible<small>A live wallpaper: the background stays behind all your windows, covering the desktop (icons included); clicks still reach the desktop</small></label><input type="checkbox" data-k="bgAlways"></div>
+</section>
+
+<section data-card="general">
+  <h2>Behaviour</h2>
+  <div class="row"><label>Return to sphere<small>The tile screen folds back to the sphere after the delay below</small></label><input type="checkbox" data-k="autoFold"></div>
+  <div class="row"><label>Keep cards open<small>An open chat, page or menu stays until you close it</small></label><input type="checkbox" data-k="keepCardsOpen"></div>
+  <div class="row"><label>Keep the Claude app in the tray<small>Work with sessions from the sphere (click a tile); Shift+click or Open in Claude shows the app</small></label><input type="checkbox" data-k="claudeTray"></div>
+  <div class="row"><label>Show working / waiting<small>Working tiles pulse in the core colour, tiles waiting on your answer pulse yellow, idle ones dim a little</small></label><input type="checkbox" data-k="tileActivity"></div>
+  <div class="row"><label>Context ring<small>A ring on each tile's rim fills with its context use up to the swap line: core colour, amber from 75 %, red from 90 %</small></label><input type="checkbox" data-k="contextRing"></div>
+  <div class="row"><label>Speech caption<small>What the voice is saying shows under the sphere, fading a few seconds after it ends</small></label><input type="checkbox" data-k="speechCaption"></div>
+  <div class="row"><label>Fold-back delay<small>Seconds after the pointer leaves the rows</small></label><input type="number" min="0" max="30" step="0.5" data-k="closeDelay" data-num></div>
+  <div class="row"><label>Editor<small>A file clicked in a session's Files or Changes tab opens here</small></label>
+    <select data-k="editor"><option value="system">System default</option><option value="vscode">VS Code (at the line)</option><option value="custom">Custom command</option></select></div>
+  <div class="row" id="editorCmdRow"><label>Editor command<small>{file} and {line} are filled in; the program by its full path, e.g. "C:\Program Files\Notepad++\notepad++.exe" -n{line} "{file}"</small></label><input type="text" data-k="editorCmd" spellcheck="false" placeholder="program -arg {line} &quot;{file}&quot;"></div>
+</section>
+
+<section data-card="general" id="audioSec">
+  <h2>Audio</h2>
+  <div class="row"><label>Output<small id="outName">-</small></label><button id="outNext">Next</button></div>
+  <div class="row"><label>Output volume</label><input type="range" min="0" max="100" step="1" id="outVol"><span class="val" id="outVolV"></span></div>
+  <div class="row"><label>Mute output</label><input type="checkbox" id="outMute"></div>
+  <div class="row"><label>Microphone<small id="micName">-</small></label><button id="micNext">Next</button></div>
+  <div class="row"><label>Microphone volume</label><input type="range" min="0" max="100" step="1" id="micVol"><span class="val" id="micVolV"></span></div>
+  <div class="row"><label>Mute microphone<small>Ctrl+Alt+F8</small></label><input type="checkbox" id="micMute"></div>
+  <div class="row" id="audioNote" style="display:none"><label><small>The audio helper is not available.</small></label></div>
+  <div class="row"><label>Output cycle<small>The devices Ctrl+Alt+F11 and the strip step through (none ticked = all)</small></label></div>
+  <div class="row"><div class="cyc" id="outCycle"></div></div>
+  <div class="row"><label>Microphone cycle<small>The devices Ctrl+Alt+F7 steps through (none ticked = all)</small></label></div>
+  <div class="row"><div class="cyc" id="micCycle"></div></div>
+</section>
+
+<section data-card="general" id="recSec">
+  <h2>Recording</h2>
+  <div class="row"><label>Recording<small id="recNote">Ctrl+Alt+R</small></label><button id="recBtn">REC</button></div>
+  <div class="row"><label>Replay<small>Always keeps the last seconds (length below); Ctrl+Alt+F12 saves them</small></label><input type="checkbox" data-k="replay"></div>
+  <div class="row"><label>Save replay</label><button id="saveReplay">Save</button></div>
+  <div class="row"><label>Screenshot<small>Ctrl+Alt+P</small></label><button id="shot">Capture</button></div>
+  <div class="row"><label>Source</label>
+    <select data-k="recSource"><option value="screen">Full screen</option><option value="region">Region</option><option value="window">Window</option></select></div>
+  <div class="row" id="regionRow" style="display:none"><label>Region<small id="regionNote">Not set: drag a box when recording starts</small></label><button id="pickRegion">Pick…</button></div>
+  <div class="row" id="windowRow" style="display:none"><label>Window<small id="windowNote">Chosen when recording starts</small></label><button id="pickWindow">Choose…</button></div>
+  <div class="row"><label>Folder<small id="recDirShow" class="path"></small></label><button id="recDirBtn">Browse…</button></div>
+  <div class="row"><label>Replay length<small>Seconds the replay buffer keeps</small></label><input type="number" min="10" max="600" step="5" data-k="replaySec" data-num></div>
+  <div class="row"><label>Record the microphone</label><input type="checkbox" data-k="recMic"></div>
+  <div class="row"><label>Record system sound</label><input type="checkbox" data-k="recSystem"></div>
+  <div class="row"><label>Keys<small>Ctrl+Alt+R record / stop · Ctrl+Alt+P screenshot · Ctrl+Alt+F12 save replay</small></label></div>
+  <div class="row" id="recGone" style="display:none"><label><small>The recorder is not available.</small></label></div>
+</section>
+
+<section data-card="general">
+  <h2>System</h2>
+  <div class="row"><label>Assistant name<small>Window titles, the tray, spoken lines and the wake word</small></label><input type="text" data-k="name" maxlength="31" spellcheck="false"></div>
+  <div class="row"><label>Recording names<small>Recordings and screenshots are named &lt;this&gt;_&lt;date&gt;; blank = the assistant's name</small></label><input type="text" data-k="recPrefix" maxlength="30" spellcheck="false"></div>
+  <div class="row"><label>App control<small>Reply, answer, start and rename sessions from the sphere: it presses buttons in the Claude app for you</small></label><input type="checkbox" class="appctl"></div>
+  <div class="row appnote" style="display:none"><label><small class="warn">App control presses buttons in the Claude app for you, like a person would. Anthropic's terms restrict automated access to its services, so use it at your own risk. It can stop working when the Claude app updates.</small></label><span><button class="appyes">Turn on</button> <button class="appno">Cancel</button></span></div>
+  <div class="row"><label>Setup<small>The first-run card: name, recordings folder, tools found, App control</small></label><button id="setupOpen">Open…</button></div>
+  <div class="row"><label>Start with Windows</label><input type="checkbox" data-k="autostart"></div>
+  <div class="row"><label><span class="nm">Theseus</span> strip<small>A slim bar at the top of the screen: mode, audio, recording. Drag it to move it</small></label><input type="checkbox" data-k="strip"></div>
+  <div class="row" data-addon="readout"><label>System readout on the strip<small>CPU, free RAM, VRAM and GPU temperature. Off: Ctrl+Alt+S shows it for 8 seconds</small></label><input type="checkbox" data-k="sysReadout"></div>
+  <div class="row" data-addon="readout"><label>Alert me on red limits<small>A notice when a system limit turns red</small></label><input type="checkbox" data-k="sysAlerts"></div>
+  <div class="row" data-addon="readout"><label>Speak red alerts<small><span class="nm">Theseus</span> says which limit it is</small></label><input type="checkbox" data-k="sysSpeak"></div>
+  <div class="row"><label>Global hotkeys<small id="keyNote">Ctrl+Alt+F11 output · F7 microphone · F8 mute · S readout · Win+Alt+Space sphere keys (arrows, Enter, Esc)</small></label><input type="checkbox" data-k="hotkeys"></div>
+</section>
+
+<section data-card="setup" id="setup">
+  <h2>Welcome</h2>
+  <div class="row"><label>Session Sphere shows your Claude Code sessions as a sphere on the desktop. A few choices; all of them can be changed later in General settings.</label></div>
+  <div class="row"><label>Assistant name<small>The voice's name and wake word; one or two plain words</small></label><input type="text" data-k="name" maxlength="31" spellcheck="false"></div>
+  <div class="row"><label>Recordings folder<small id="setupRec" class="path"></small></label><button id="setupRecBtn">Browse…</button></div>
+  <div class="row"><label>Found on this PC<small id="setupFound">Looking…</small></label></div>
+  <div class="row"><label>App control<small>Reply, answer, start and rename sessions from the sphere: it presses buttons in the Claude app for you</small></label><input type="checkbox" class="appctl"></div>
+  <div class="row appnote" style="display:none"><label><small class="warn">App control presses buttons in the Claude app for you, like a person would. Anthropic&#39;s terms restrict automated access to its services, so use it at your own risk. It can stop working when the Claude app updates.</small></label><span><button class="appyes">Turn on</button> <button class="appno">Cancel</button></span></div>
+  <div class="row"><label></label><button id="setupDone">Done</button></div>
+</section>
+
+<section data-card="general" id="addonsSec">
+  <div id="persOnly">   <!-- your own add-ons: only with personal.settings.json beside the app -->
+  <h2>Add-ons</h2>
+  <div class="row"><label>Each add-on turns itself on when its file is there; untick to keep it off</label></div>
+  <div class="row"><label>Modes<small class="ast" data-ast="modes"></small></label><input type="checkbox" data-ao="modes"></div>
+  <div class="row"><label>Modes folder<small>Holds editor_limits.json and mode_request.json</small></label><input type="text" class="pth" data-k="modeDir" spellcheck="false"></div>
+  <div class="row"><label>System readout<small class="ast" data-ast="readout"></small></label><input type="checkbox" data-ao="readout"></div>
+  <div class="row"><label>Readout file<small>system_status.json (SystemMonitor)</small></label><input type="text" class="pth" data-k="statusFile" spellcheck="false"></div>
+  <div class="row"><label>Manager feed<small class="ast" data-ast="feed"></small></label><input type="checkbox" data-ao="feed"></div>
+  <div class="row"><label>Feed file<small>Groups, the voice cycle and the manager card</small></label><input type="text" class="pth" data-k="feedFile" spellcheck="false"></div>
+  <div class="row"><label>External voice<small class="ast" data-ast="voice"></small></label><input type="checkbox" data-ao="voice"></div>
+  <div class="row"><label>Voice folder<small>EchoStatus: speak.ps1 and state</small></label><input type="text" class="pth" data-k="echoDir" spellcheck="false"></div>
+  <div class="row"><label>Local Whisper<small class="ast" data-ast="whisper"></small></label><input type="checkbox" data-ao="whisper"></div>
+  <div class="row"><label>Whisper Python<small>The python.exe with Whisper installed (for voice questions)</small></label><input type="text" class="pth" data-k="whisperPy" spellcheck="false"></div>
+  </div>
+  <h2>Paths</h2>
+  <div class="row"><label>Session files<small>Claude Code's transcripts; blank = ~/.claude/projects</small></label><input type="text" class="pth" data-k="transcriptsRoot" spellcheck="false"></div>
+  <div class="row"><label>Recent sessions<small>Without a manager feed: sessions changed within this many days</small></label><input type="number" min="1" max="60" step="1" data-k="readerDays" data-num></div>
+  <div class="row"><label>ffmpeg<small>For recording; blank = found on the PATH</small></label><input type="text" class="pth" data-k="ffmpeg" spellcheck="false"></div>
+</section>
+
+<section data-addon="modes" id="theseus" data-card="theseus">
+  <h2><span class="nm">Theseus</span> (Session manager)</h2>
+  <div class="row"><label>Mode<small id="modeNote"><span class="nm">Theseus</span> switches when it next checks in</small></label>
+    <select id="modeSel"><option value="normal">Normal</option><option value="worker">Worker</option><option value="night">Night</option><option value="weekend">Weekend</option><option value="performance">Max perf</option><option value="efficiency">Max efficiency</option></select></div>
+</section>
+
+<section data-card="theseus">
+  <h2>Core</h2>
+  <div class="row"><label>Colour<small>Core, tile energy and glow; also the Normal mode colour</small></label><input type="color" data-k="glow"></div>
+  <div class="row" data-addon="modes"><label>Core follows mode<small>The core takes the colour of <span class="nm">Theseus</span>'s current mode</small></label><input type="checkbox" data-k="coreFollowsMode"></div>
+  <div class="row"><label>Idle brightness</label><input type="range" min="0" max="1" step="0.05" data-k="idleGlow" data-num><span class="val"></span></div>
+  <div class="row"><label>Glow while speaking<small>Core lights up while <span class="nm">Theseus</span> talks</small></label><input type="checkbox" data-k="glowOnSpeech"></div>
+</section>
+
+<section data-card="theseus">
+  <h2>Tiles</h2>
+  <div class="row"><label>Wear<small>How a tile ages as its context fills towards the swap line</small></label><select data-k="tileWear" data-num><option value="0">Ember</option><option value="1">Rust Spread</option><option value="2">Scorch</option><option value="3">Energy Drain</option><option value="4">Rust Cracks</option><option value="5">Heat Tint</option><option value="6">Frost</option><option value="7">Crystals</option><option value="8">Verdigris</option><option value="9">Burn-Out</option><option value="10">Glitch</option><option value="11">Fill Gauge</option><option value="12">Grime</option></select></div>
+  <div class="row" id="wearThumbsRow"><div id="wearThumbs"></div></div>
+  <div class="row"><label>Animated wear preview<small>One tile sweeps the chosen wear from 0 to 100 % and back (about 8 s). Off: nothing is drawn</small></label><input type="checkbox" data-k="tileWearPreview"></div>
+  <div class="row"><label>Swap<small>What a tile does when its session is replaced by a fresh one (energy cells too)</small></label><select data-k="tileSwap" data-num><option value="1">Flare</option><option value="2">Polished</option><option value="3">Shatter</option><option value="4">Dissolve</option><option value="6">Power Down</option><option value="5">Card Flip</option></select></div>
+  <div class="row" id="swapThumbsRow"><div id="swapThumbs"></div></div>
+  <div class="row"><label>Animated swap preview<small>One tile loops the chosen swap, wearing the chosen wear at about 60 %. Off: nothing is drawn</small></label><input type="checkbox" data-k="tileSwapPreview"></div>
+  <div class="row" id="tilePrevRow" style="display:none"><div id="tilePrev"></div></div>
+</section>
+
+<section data-card="theseus">
+  <h2>Show tiles</h2>
+  <div class="row"><label>On the sphere<small>A group left out is not shown on the sphere; its spots stay empty (see Empty spots)</small></label></div>
+  <div class="row"><div class="tf"><label><input type="checkbox" data-tf="tilesSphere:mgr">Session manager</label><label><input type="checkbox" data-tf="tilesSphere:active">Active</label><label><input type="checkbox" data-tf="tilesSphere:parked">Parked</label><label><input type="checkbox" data-tf="tilesSphere:ungrouped">Ungrouped</label><label><input type="checkbox" data-tf="tilesSphere:archived">Archived</label></div></div>
+  <div class="row"><label>In the rows<small>A group left out is missing from the spread-out rows, header and all. Archived: sessions archived in the last 7 days (up to 20)</small></label></div>
+  <div class="row"><div class="tf"><label><input type="checkbox" data-tf="tilesRows:mgr">Session manager</label><label><input type="checkbox" data-tf="tilesRows:active">Active</label><label><input type="checkbox" data-tf="tilesRows:parked">Parked</label><label><input type="checkbox" data-tf="tilesRows:ungrouped">Ungrouped</label><label><input type="checkbox" data-tf="tilesRows:archived">Archived</label></div></div>
+</section>
+
+<section data-card="theseus" data-addon="modes">
+  <h2>Modes</h2>
+  <div class="row" data-addon="modes"><label>Mode moves the core<small>Speed and brightness per mode (x normal)</small></label><input type="checkbox" data-k="modeMotion"></div>
+  <div class="row"><label>Worker mode<small>Colour, core speed, brightness (x normal)</small></label><span class="mrow"><input type="color" data-mc="worker"><input type="number" min="0.1" max="6" step="0.1" data-ms="worker" title="Speed"><input type="number" min="0.2" max="3" step="0.1" data-mb="worker" title="Brightness"></span></div>
+  <div class="row"><label>Night mode<small>A moon: crescent-lit, cages nearly still</small></label><span class="mrow"><input type="color" data-mc="night"><input type="number" min="0.1" max="6" step="0.1" data-ms="night" title="Speed"><input type="number" min="0.2" max="3" step="0.1" data-mb="night" title="Brightness"></span></div>
+  <div class="row"><label>Weekend mode<small>Lava lamp: slow drifting blobs</small></label><span class="mrow"><input type="color" data-mc="weekend"><input type="number" min="0.1" max="6" step="0.1" data-ms="weekend" title="Speed"><input type="number" min="0.2" max="3" step="0.1" data-mb="weekend" title="Brightness"></span></div>
+  <div class="row"><label>Max perf mode<small>Brightest, with spikes</small></label><span class="mrow"><input type="color" data-mc="performance"><input type="number" min="0.1" max="6" step="0.1" data-ms="performance" title="Speed"><input type="number" min="0.2" max="3" step="0.1" data-mb="performance" title="Brightness"></span></div>
+  <div class="row"><label>Max efficiency mode<small>Lean: 2 working sessions, rest parked; core breathes slowly</small></label><span class="mrow"><input type="color" data-mc="efficiency"><input type="number" min="0.1" max="6" step="0.1" data-ms="efficiency" title="Speed"><input type="number" min="0.2" max="3" step="0.1" data-mb="efficiency" title="Brightness"></span></div>
+  <div class="row"><label>Max perf spikes<small>Peaks and bursts on the core (0 = none)</small></label><input type="range" min="0" max="1" step="0.05" data-k="spikeStrength" data-num><span class="val"></span></div>
+</section>
+
+<section data-card="theseus">
+  <h2>Voice</h2>
+  <div class="row" data-addon="voice"><label>Voice<small>Default EchoStatus voice (Kokoro)</small></label><select data-k="voice" id="voice"></select></div>
+  <div class="row" data-addon="feed voice"><label>Cycle voices<small>Each time <span class="nm">Theseus</span> is replaced, the next ticked voice takes over</small></label><input type="checkbox" data-k="voiceCycle"></div>
+  <div class="row" data-addon="feed voice" id="cycleRow" style="display:none"><div id="cycleList"></div></div>
+  <div class="row" data-addon="feed voice" id="cycleTestRow" style="display:none"><label>Test the cycle<small id="cycleNote">Moves on as if <span class="nm">Theseus</span> had been replaced; the new voice speaks</small></label><button id="cycleTest">Next voice</button></div>
+  <div class="row"><label>Speed</label><input type="range" min="0.6" max="1.6" step="0.05" data-k="voiceSpeed" data-num><span class="val"></span></div>
+  <div class="row"><label>Test</label><button id="test">Speak a test line</button></div>
+</section>
+
+<section data-card="theseus" id="genVoice">
+  <h2>Voice commands</h2>
+  <div class="row"><label>Listen<small id="voiceNote">Offline, built-in Windows recognition</small></label>
+    <select data-k="voiceCmd"><option value="off">Off</option><option value="ptt">Push-to-talk</option><option value="wake">Wake word</option><option value="always">Always on</option></select></div>
+  <div class="row"><label><small>Push-to-talk: hold Right Ctrl and speak. Wake word: say "<span class="nm">Theseus</span>", then the command. Commands: system status, mute mic, unmute mic, next output, next mic, start recording, stop recording, save replay, screenshot, mode &lt;name&gt;.</small></label></div>
+  <h2 data-addon="whisper">Voice questions</h2>
+  <div class="row" data-addon="whisper"><label>Questions<small>"<span class="nm">Theseus</span>" + any question that is not a command (push-to-talk: just ask). Claude answers; local Whisper hears it</small></label><input type="checkbox" data-k="voiceAsk"></div>
+  <div class="row" data-addon="whisper"><label>Web lookups<small>Search the web when a question needs current facts (news, prices, weather)</small></label><input type="checkbox" data-k="askWeb"></div>
+  <div class="row" data-addon="whisper"><label>Speak answers<small>Off: the answer shows only as the caption under the sphere</small></label><input type="checkbox" data-k="askSpeak"></div>
+  <div class="row" data-addon="whisper"><label><small>Sessions by voice: "tell &lt;session&gt; …" (read back, sent after 3 s unless you say cancel), "what did &lt;session&gt; say", "stop &lt;session&gt;" (say yes)</small></label></div>
+  <div class="row" data-addon="whisper"><label>Claude sign-in<small id="askNote">Run <b>claude setup-token</b> once and paste the token here</small></label>
+    <input type="password" id="askTok" placeholder="token" style="min-width:110px;width:110px"> <button id="askSave">Save</button> <button id="askTest">Test</button></div>
+</section>
+
+<script>
+const VOICES = { 'British male': ['bm_lewis', 'bm_george', 'bm_daniel', 'bm_fable'], 'British female': ['bf_emma', 'bf_isabella', 'bf_alice', 'bf_lily'],
+  'American male': ['am_michael', 'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam', 'am_onyx', 'am_puck'],
+  'American female': ['af_heart', 'af_bella', 'af_nicole', 'af_sarah', 'af_sky', 'af_alloy', 'af_aoede', 'af_jessica', 'af_kore', 'af_nova', 'af_river'] };
+const vs = document.getElementById('voice');
+for (const [g, list] of Object.entries(VOICES)) {
+  const og = document.createElement('optgroup'); og.label = g;
+  for (const v of list) { const o = document.createElement('option'); o.value = v; o.textContent = v.slice(3).replace(/^./, c => c.toUpperCase()); og.appendChild(o); }
+  vs.appendChild(og);
+}
+// voice cycle: a tick box per voice, grouped like the Voice list
+const cycleList = document.getElementById('cycleList'), cvs = [];
+for (const [g, list] of Object.entries(VOICES)) {
+  const h = document.createElement('h3'); h.textContent = g; cycleList.appendChild(h);
+  for (const v of list) {
+    const l = document.createElement('label'), c = document.createElement('input'); c.type = 'checkbox'; c.value = v; cvs.push(c);
+    c.addEventListener('change', () => window.sphere.setSettings({ voiceCycleList: cvs.filter(x => x.checked).map(x => x.value) }));
+    l.append(c, v.slice(3).replace(/^./, ch => ch.toUpperCase())); cycleList.appendChild(l);
+  }
+}
+const els = [...document.querySelectorAll('[data-k]')];
+const aos = [...document.querySelectorAll('[data-ao]')];
+// App control: the notice comes the first time it is switched on (in the section the switch is in)
+const appCtls = [...document.querySelectorAll('.appctl')], noteOf = el => el.closest('section').querySelector('.appnote');
+for (const el of appCtls) el.addEventListener('change', () => {
+  if (el.checked && !(lastS && lastS.appNoticeSeen)) { el.checked = false; noteOf(el).style.display = ''; return; }
+  window.sphere.setSettings({ appControl: el.checked });
+});
+for (const b of document.querySelectorAll('.appyes')) b.addEventListener('click', () => { b.closest('.appnote').style.display = 'none'; window.sphere.setSettings({ appControl: true, appNoticeSeen: true }); });
+for (const b of document.querySelectorAll('.appno')) b.addEventListener('click', () => { b.closest('.appnote').style.display = 'none'; });
+for (const el of aos) el.addEventListener('change', () => window.sphere.setSettings({ addons: { [el.dataset.ao]: el.checked } }));
+const mcs = [...document.querySelectorAll('[data-mc]')];
+for (const el of mcs) el.addEventListener('change', () => window.sphere.setSettings({ modeColors: { [el.dataset.mc]: el.value } }));
+// a number field: blank or not a number sends nothing (it does not become 0); the value is kept within the field's range
+function num(el) {
+  if (el.value.trim() === '') return null;
+  let v = Number(el.value); if (!Number.isFinite(v)) return null;
+  if (el.min !== '') v = Math.max(Number(el.min), v); if (el.max !== '') v = Math.min(Number(el.max), v);
+  return v;
+}
+// a slider being dragged or a field being typed in is not overwritten by the settings echo; a field left blank shows the setting again
+const editing = el => el === document.activeElement && (el.type === 'range' || el.type === 'number' || el.type === 'text');
+let lastS = null;
+// Show tiles: one box per group and place (data-tf="tilesSphere:mgr")
+const tfs = [...document.querySelectorAll('[data-tf]')];
+for (const el of tfs) el.addEventListener('change', () => { const [k, g] = el.dataset.tf.split(':'); window.sphere.setSettings({ [k]: { [g]: el.checked } }); });
+const mss = [...document.querySelectorAll('[data-ms]')], mbs = [...document.querySelectorAll('[data-mb]')];
+for (const el of mbs) el.addEventListener('change', () => { const v = num(el); if (v != null) window.sphere.setSettings({ modeBright: { [el.dataset.mb]: v } }); });
+for (const el of mss) el.addEventListener('change', () => { const v = num(el); if (v != null) window.sphere.setSettings({ modeSpeed: { [el.dataset.ms]: v } }); });
+for (const el of document.querySelectorAll('input[type=number]')) el.addEventListener('blur', () => { if (lastS && num(el) == null) show(lastS); });
+// a bar card shows only its own sections (#general / #theseus); the plain settings window shows them all
+const CARD_TITLES = { general: 'General', theseus: 'Theseus', setup: 'Setup' }, NM = () => (lastS && lastS.name) || 'Theseus';
+function showCard() {
+  const c = location.hash.slice(1), isCard = (document.documentElement.classList.contains('card') && c in CARD_TITLES) || c === 'setup';   // setup shows alone, card or not
+  for (const sec of document.querySelectorAll('section[data-card]')) sec.style.display = (!isCard && sec.dataset.card !== 'setup') || sec.dataset.card === c ? '' : 'none';
+  document.getElementById('title').textContent = isCard ? (c === 'theseus' ? NM() : CARD_TITLES[c]) : NM();
+  if (!isCard) document.getElementById(c)?.scrollIntoView(); else scrollTo(0, 0);
+  if (lastS) tileUi(lastS);   // a card shown by a hash change: its pictures and previews start now (they skip hidden sections)
+}
+showCard();
+function show(s) {
+  const nameNow = lastS && lastS.name; lastS = s; tileUi(s);
+  if (s.name !== nameNow) { for (const e of document.querySelectorAll('.nm')) e.textContent = NM(); document.title = NM() + ' settings'; showCard(); }
+  for (const c of cvs) c.checked = (s.voiceCycleList || []).includes(c.value);
+  document.getElementById('cycleRow').style.display = document.getElementById('cycleTestRow').style.display = s.voiceCycle ? '' : 'none';
+  for (const el of mcs) el.value = s.modeColors[el.dataset.mc];
+  for (const el of tfs) { const [k, g] = el.dataset.tf.split(':'); el.checked = !!(s[k] && s[k][g]); }
+  for (const el of mss) if (!editing(el)) el.value = s.modeSpeed[el.dataset.ms];
+  for (const el of mbs) if (!editing(el)) el.value = s.modeBright[el.dataset.mb];
+  document.getElementById('recDirShow').textContent = s.recDir || '';
+  document.getElementById('editorCmdRow').style.display = s.editor === 'custom' ? '' : 'none';
+  // add-ons: the switch, its state, and the rows that need it
+  for (const el of appCtls) el.checked = !!s.appControl;
+  document.getElementById('persOnly').style.display = s.personal ? '' : 'none';
+  document.getElementById('setupRec').textContent = s.recDir || 'your Videos folder';
+  const L = s.live || {};
+  for (const el of aos) el.checked = !(s.addons && s.addons[el.dataset.ao] === false);
+  for (const el of document.querySelectorAll('[data-ast]')) {
+    const k = el.dataset.ast, x = L[k] || {}, off = s.addons && s.addons[k] === false;
+    el.textContent = x.on ? 'On' : off ? 'Off' : x.found ? 'Off' : 'Not set up (no file found)'; el.className = 'ast ' + (x.on ? 'on' : off ? '' : 'miss');
+  }
+  for (const el of document.querySelectorAll('[data-addon]')) el.classList.toggle('addoff', !el.dataset.addon.split(' ').every(k => L[k] && L[k].on));
+  for (const el of els) {
+    const v = s[el.dataset.k];
+    if (editing(el)) continue;
+    if (el.type === 'checkbox') el.checked = !!v; else el.value = String(v);
+    const val = el.nextElementSibling; if (val && val.classList.contains('val')) val.textContent = Number(v).toFixed(2);
+  }
+}
+for (const el of els) {
+  const ev = el.type === 'range' ? 'input' : 'change';
+  el.addEventListener(ev, () => {
+    const v = el.type === 'checkbox' ? el.checked : 'num' in el.dataset ? (el.type === 'number' ? num(el) : Number(el.value)) : el.value;
+    if (v == null) return;
+    const val = el.nextElementSibling; if (val && val.classList.contains('val')) val.textContent = Number(v).toFixed(2);
+    window.sphere.setSettings({ [el.dataset.k]: v });
+    if (el.dataset.k === 'voiceCycle') document.getElementById('cycleRow').style.display = document.getElementById('cycleTestRow').style.display = v ? '' : 'none';
+  });
+}
+document.getElementById('test').onclick = () => window.sphere.testVoice();
+document.getElementById('cycleTest').onclick = () => window.sphere.testCycle().then(v => { document.getElementById('cycleNote').textContent = v ? `Now: ${v.slice(3).replace(/^./, c => c.toUpperCase())}` : 'Tick some voices first'; });
+// Tiles: a picture per swap (drawn once per wear style, then the renderer is gone) and the optional animated preview (one small
+// renderer, only while the box is ticked). Both use the sphere's own tile material and swap timeline (tilepreview.js).
+const SWAPS = [[1, 'Flare'],[2, 'Polished'],[3, 'Shatter'],[4, 'Dissolve'],[6, 'Power Down'],[5, 'Card Flip']];
+const thumbBox = document.getElementById('swapThumbs'), prevRow = document.getElementById('tilePrevRow'), prevBox = document.getElementById('tilePrev');
+for (const [m, name] of SWAPS) {
+  const b = document.createElement('button'), im = document.createElement('img'); b.type = 'button'; b.dataset.swap = m; b.title = name; im.alt = '';
+  b.append(im, name); b.onclick = () => window.sphere.setSettings({ tileSwap: m }); thumbBox.appendChild(b);
+}
+// wear pictures: a row that scrolls sideways (13 styles); the mouse wheel scrolls it too
+const WEARS = ['Ember', 'Rust Spread', 'Scorch', 'Energy Drain', 'Rust Cracks', 'Heat Tint', 'Frost', 'Crystals', 'Verdigris', 'Burn-Out', 'Glitch', 'Fill Gauge', 'Grime'];
+const wearBox = document.getElementById('wearThumbs');
+WEARS.forEach((name, k) => {
+  const b = document.createElement('button'), im = document.createElement('img'); b.type = 'button'; b.dataset.wear = k; b.title = name; im.alt = '';
+  b.append(im, name); b.onclick = () => window.sphere.setSettings({ tileWear: k }); wearBox.appendChild(b);
+});
+for (const box of [wearBox, thumbBox]) box.addEventListener('wheel', e => { if (!e.deltaX && e.deltaY && box.scrollWidth > box.clientWidth) { box.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
+let wearKey = '', wearSel = -1;
+let prevSeen = true;
+new IntersectionObserver(es => { const v = es[es.length - 1].isIntersecting; if (v !== prevSeen) { prevSeen = v; if (want) tileUi(want); } }).observe(prevRow);
+let tpMod = null, thumbKey = '', thumbT = 0, prev = null, want = null;
+const loadTp = () => tpMod ||= import('./tilepreview.js');
+function tileUi(s) {
+  want = s;
+  for (const b of thumbBox.children) b.classList.toggle('on', +b.dataset.swap === s.tileSwap);
+  const shown = thumbBox.offsetParent !== null;                          // the Theseus section is on screen
+  for (const b of wearBox.children) b.classList.toggle('on', +b.dataset.wear === s.tileWear);
+  if (shown && s.tileWear !== wearSel) { wearSel = s.tileWear; wearBox.children[s.tileWear]?.scrollIntoView({ inline: 'nearest', block: 'nearest' }); }
+  if (shown && s.glow !== wearKey) {
+    wearKey = s.glow;
+    loadTp().then(m => m.makeWearThumbs(want.tileWear, want.glow, (k, u) => { const b = wearBox.children[k]; if (b) b.firstChild.src = u; })).catch(e => { wearKey = null; console.error('wear pictures', e); });   // each picture shows as it is drawn
+  }
+  const key = s.tileWear + '|' + s.glow;
+  if (shown && key !== thumbKey) {
+    thumbKey = key; clearTimeout(thumbT);
+    thumbT = setTimeout(() => loadTp().then(m => m.makeThumbs(want.tileWear, want.glow, (k, u) => { for (const b of thumbBox.children) if (b.dataset.swap === String(k)) b.firstChild.src = u; })).catch(e => { thumbKey = ''; console.error('swap pictures', e); }), 150);
+  }
+  const wearOn = !!s.tileWearPreview && shown, swapOn = !!s.tileSwapPreview && shown;
+  prevRow.style.display = wearOn || swapOn ? '' : 'none';
+  // the previews draw only while their row is on screen (scrolled away: paused, nothing drawn)
+  if (!wearOn && !swapOn || !prevSeen) { prev?.set({ wearOn: false, swapOn: false }); return; }
+  loadTp().then(m => {
+    const w = want; prev ||= m.startPreview(prevBox);
+    prev.set({ wearOn: !!w.tileWearPreview, swapOn: !!w.tileSwapPreview, mode: w.tileSwap, wear: w.tileWear, glow: w.glow });
+  }).catch(e => console.error('tile preview', e));
+}
+addEventListener('pagehide', () => { prev?.stop(); prev = null; });
+window.sphere.displays().then(ds => {
+  const sel = document.getElementById('display');
+  for (const d of ds) { const o = document.createElement('option'); o.value = d.id; o.textContent = d.label; sel.appendChild(o); }
+  return window.sphere.settings();
+}).then(show);
+window.sphere.onSettings(show);
+const modeSel = document.getElementById('modeSel'), modeNote = document.getElementById('modeNote');
+const showMode = m => { modeSel.value = m.pending || m.mode || 'normal'; modeNote.textContent = m.pending && m.pending !== m.mode ? `Switching from ${m.mode} - ${NM()} picks it up shortly` : 'Current mode'; };
+modeSel.onchange = () => window.sphere.setMode(modeSel.value).then(showMode);
+window.sphere.mode().then(showMode); setInterval(() => window.sphere.mode().then(showMode), 3000);
+// ---- Theseus tools: audio devices, volumes, recording ----
+const $ = id => document.getElementById(id);
+let tools = null;
+const cycBoxes = { outCycle: [], micCycle: [] };
+function buildCycle(key, devs) {
+  const box = $(key), sig = JSON.stringify(devs.map(d => d.id));
+  if (box.dataset.sig !== sig) {
+    box.dataset.sig = sig; box.textContent = ''; cycBoxes[key] = [];
+    for (const d of devs) {
+      const l = document.createElement('label'), c = document.createElement('input'); c.type = 'checkbox'; c.value = d.id; cycBoxes[key].push(c);
+      c.addEventListener('change', () => {       // ids of devices that are unplugged right now stay in the list
+        const listed = new Set(devs.map(x => x.id)), keep = ((lastS && lastS[key]) || []).filter(id => !listed.has(id));
+        window.sphere.setSettings({ [key]: [...keep, ...cycBoxes[key].filter(x => x.checked).map(x => x.value)] });
+      });
+      l.append(c, d.name); l.title = d.name; box.appendChild(l);
+    }
+  }
+  const sel = (lastS && lastS[key]) || [];
+  for (const c of cycBoxes[key]) c.checked = sel.includes(c.value);
+}
+const mmss = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+const act = (n, a) => window.sphere.act(n, a);
+function recButton() {
+  const r = tools && tools.rec, on = !!(r && r.recording);
+  $('recBtn').textContent = on ? `Stop  ${r.since ? mmss(Date.now() - r.since) : ''}` : 'REC';
+  $('recBtn').classList.toggle('rec', true); $('recBtn').classList.toggle('on', on);
+}
+function showTools(t) {
+  tools = t;
+  const a = t.audio, av = t.avail.audio, rv = t.avail.rec;
+  $('audioNote').style.display = av ? 'none' : '';
+  buildCycle('outCycle', a ? a.outs || [] : []); buildCycle('micCycle', a ? a.mics || [] : []);
+  $('outName').textContent = a && a.out ? a.out.name : '-'; $('micName').textContent = a && a.mic ? a.mic.name : '-';
+  for (const [k, d] of [['out', a && a.out], ['mic', a && a.mic]]) {
+    const v = $(k + 'Vol'), m = $(k + 'Mute');
+    if (d) { if (document.activeElement !== v) v.value = Math.round((d.vol || 0) * 100); $(k + 'VolV').textContent = Math.round((d.vol || 0) * 100) + '%'; m.checked = !!d.mute; }
+    v.disabled = m.disabled = !d;
+  }
+  $('outNext').disabled = $('micNext').disabled = !av;
+  const r = t.rec, on = !!(r && r.recording), s = lastS || {};
+  $('recGone').style.display = rv ? 'none' : '';
+  $('recBtn').disabled = $('shot').disabled = $('pickRegion').disabled = $('pickWindow').disabled = !rv;
+  $('saveReplay').disabled = !rv || !s.replay;
+  $('recNote').textContent = on ? `Recording${r.file ? ' ' + r.file.replace(/^.*[\/]/, '') : ''}` : 'Ctrl+Alt+R';
+  $('regionRow').style.display = s.recSource === 'region' ? '' : 'none'; $('windowRow').style.display = s.recSource === 'window' ? '' : 'none';
+  $('regionNote').textContent = s.recRegion ? `${s.recRegion.w} x ${s.recRegion.h} at ${s.recRegion.x}, ${s.recRegion.y}` : 'Not set: a box is dragged when recording starts';
+  const f = (t.keys && t.keys.failed) || [];
+  $('keyNote').textContent = f.length ? `Held by another program: ${f.map(x => x.replace('Control', 'Ctrl').replace('Super', 'Win')).join(', ')} (retrying)` : 'Ctrl+Alt+F11 output · F7 microphone · F8 mute · S readout · Win+Alt+Space sphere keys (arrows, Enter, Esc)';
+  recButton();
+}
+$('setupRecBtn').onclick = () => window.sphere.pickFolder().then(p => { if (p) window.sphere.setSettings({ recDir: p }); });
+$('setupOpen').onclick = () => window.sphere.openSettings('setup');
+$('setupDone').onclick = () => { window.sphere.setSettings({ setupDone: true }); window.close(); };
+// what was found: git, gh, Windows Terminal, ffmpeg, the Claude app
+window.sphere.setupInfo().then(f => { if (!f) return; const t = [['git', f.git], ['GitHub CLI', f.gh], ['Windows Terminal', f.wt], ['ffmpeg', f.ffmpeg], ['Claude app', f.claude]];
+  $('setupFound').innerHTML = t.map(([n, ok]) => `${ok ? '✓' : '✗'} ${n}`).join(' · ') + (f.ffmpeg ? '' : '<br>Without ffmpeg there is no recording; set its path under Paths.'); });
+$('recDirBtn').onclick = () => window.sphere.pickFolder().then(p => { if (p) window.sphere.setSettings({ recDir: p }); });
+// Voice Ask sign-in: the token is kept by main in its own file (not in settings); Test asks Claude for one word
+const askNote = (t, bad) => { $('askNote').textContent = t; $('askNote').style.color = bad ? '#e5484d' : ''; };
+window.sphere.askToken().then(has => { if (has) askNote('Token saved. Test checks it'); });
+$('askSave').onclick = () => window.sphere.askToken($('askTok').value).then(has => { $('askTok').value = ''; askNote(has ? 'Token saved. Test checks it' : 'No token: uses the CLI login'); });
+$('askTest').onclick = () => { askNote('Asking Claude…'); window.sphere.askTest().then(r => askNote(r.ok ? `OK: "${r.text}" in ${(r.ms / 1000).toFixed(1)} s` : 'Failed: ' + r.why, !r.ok)); };
+$('outNext').onclick = () => act('nextOut'); $('micNext').onclick = () => act('nextMic');
+$('recBtn').onclick = () => act('recToggle'); $('saveReplay').onclick = () => act('saveReplay'); $('shot').onclick = () => act('screenshot');
+$('pickRegion').onclick = () => act('pickRegion'); $('pickWindow').onclick = () => act('pickWindow').then(w => { if (w) $('windowNote').textContent = w.title || 'Window chosen'; });
+const volT = {};
+for (const k of ['out', 'mic']) {
+  $(k + 'Mute').onchange = () => act('setMute', { dev: k, on: $(k + 'Mute').checked });
+  $(k + 'Vol').addEventListener('input', () => {
+    $(k + 'VolV').textContent = $(k + 'Vol').value + '%';
+    if (!volT[k]) volT[k] = setTimeout(() => { volT[k] = null; act('setVolume', { dev: k, v: Number($(k + 'Vol').value) / 100 }); }, 60);
+  });
+}
+window.sphere.tools().then(t => { if (t) showTools(t); }); window.sphere.onTools(showTools);
+setInterval(() => { if (tools && tools.rec && tools.rec.recording) recButton(); }, 500);
+addEventListener('hashchange', showCard);
+</script>
+</body>
+</html>

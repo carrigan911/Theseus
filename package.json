@@ -1,0 +1,45 @@
+{
+  "name": "session-sphere",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A desktop sphere of your Claude Code sessions (unofficial)",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "dependencies": {
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "^26.15.3"
+  },
+  "author": "carrigan911",
+  "build": {
+    "appId": "app.sessionsphere",
+    "productName": "Session Sphere",
+    "asar": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**",
+      "assets/**",
+      "package.json",
+      "!**/node_modules/three/{examples,src,editor,docs,manual}/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createStartMenuShortcut": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Session Sphere"
+    }
+  }
+}
