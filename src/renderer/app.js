@@ -88,6 +88,18 @@ let onTop = false, closeAt = 0, over = false, spreadOn = false, spread = 0, talk
 let captionOn = true, capOff = 0, askCap = null, askPulse = false;   // speech caption, Voice Ask caption + thinking pulse (below)
 const cap = document.body.appendChild(document.createElement('div')); cap.id = 'cap';
 const lis = document.body.appendChild(document.createElement('div')); lis.id = 'lis'; lis.textContent = 'Listening…';   // voice chat window (below)
+// update pill (UpdateButton_Spec): above the folded sphere, only while an update is ready (hidden while the rows are spread)
+const upd = document.body.appendChild(document.createElement('div')); upd.id = 'upd'; let updS = null;
+function placeUpd() { upd.style.left = cx + 'px'; upd.style.top = Math.max(6, cy - scale * pxPerUnit - 44) + 'px'; }
+function showUpd(s) {
+  updS = s; const on = !!s && s.kind !== 'none';
+  upd.textContent = !on ? '' : s.waiting ? 'Updating after the swap…' : s.kind === 'dev' ? 'Restart to update' : `Update to ${s.version}`;
+  upd.title = on && s.notes ? s.notes : ''; upd.classList.toggle('wait', !!(on && s.waiting)); upd.classList.toggle('on', on && !spreadOn);
+  if (on) placeUpd();
+}
+const overUpd = (x, y) => { if (!upd.classList.contains('on')) return false; const r = upd.getBoundingClientRect(); return x >= r.left - 4 && x <= r.right + 4 && y >= r.top - 4 && y <= r.bottom + 4; };
+upd.addEventListener('click', e => { e.stopPropagation(); if (updS && !updS.waiting) window.sphere.updateInstall(); });
+window.sphere.update().then(showUpd); window.sphere.onUpdate(showUpd);
 let chatOn = false, lisT = 0;
 const persp = () => 6 / (6 - 1.15 * scale);      // flat rows sit nearer the camera than the sphere centre
 function inside(x, y) {
@@ -128,7 +140,7 @@ function labelScale() {
 let coverAt = 0, coverBusy = false, px = -1, py = -1, holdTill = 0;
 function pointer(x, y) {
   px = x; py = y;
-  const o = inside(x, y) || overChips(x, y);
+  const o = inside(x, y) || overChips(x, y) || overUpd(x, y);
   if (o && !spreadOn && !coverBusy && performance.now() - coverAt > 200) {
     coverAt = performance.now(); coverBusy = true;
     window.sphere.covered().then(c => { coverBusy = false; if (!c && !spreadOn && inside(px, py)) startSpread(); }, () => { coverBusy = false; });
@@ -261,7 +273,7 @@ function openPress(name, kind) {
 // the fold-back timer and the window's place in front / behind (also run from a timer: rAF can be throttled)
 function syncFold(now) {
   if (closeAt && now >= closeAt) { closeAt = 0; if (!busy()) spreadOn = false; }
-  if (spreadOn !== onTop) { onTop = spreadOn; window.sphere.front(onTop); if (spreadOn) cap.classList.remove('on'); else { hoverTile(-1, -1); searchClose(); keysOff(); if (overlayOn) closeCard(); } }
+  if (spreadOn !== onTop) { onTop = spreadOn; window.sphere.front(onTop); showUpd(updS); if (spreadOn) cap.classList.remove('on'); else { hoverTile(-1, -1); searchClose(); keysOff(); if (overlayOn) closeCard(); } }
 }
 // frame pacing: the frame-rate setting; folded and idle at most 30 fps; folded and covered by other windows about 2 fps
 // (the clocks keep going, frames are only drawn less often)
@@ -316,7 +328,7 @@ let area = null;
 function reportArea() {
   const a = { x: Math.round(cx), y: Math.round(cy), r: Math.round(scale * pxPerUnit) };
   if (area && a.x === area.x && a.y === area.y && (a.r === area.r || Math.abs(a.r - area.r) < 4 && Math.abs(scaleTarget - scale) > 1e-3)) return;
-  area = a; window.sphere.sphereArea?.(a); if (cap.classList.contains('on')) placeCaption();
+  area = a; window.sphere.sphereArea?.(a); if (cap.classList.contains('on')) placeCaption(); if (upd.classList.contains('on')) placeUpd();
 }
 addEventListener('resize', () => { resize(); wake(); });
 setTimeout(() => { if (!renderer) makeRenderer(true); }, 3000);  // normally made once the settings arrive (MSAA by render scale)
@@ -360,7 +372,8 @@ function modeMotion() {
 function coreColour() {
   if (!S) return;
   const m = MODES.find(x => x[0] === curMode.mode);
-  sphere.setGlow(S.coreFollowsMode && m ? m[2] : S.glow, level);
+  const g = S.coreFollowsMode && m ? m[2] : S.glow;
+  sphere.setGlow(g, level); if (typeof g === 'string') upd.style.setProperty('--glow', g);   // the update pill glows in the core's colour
 }
 const bar = document.createElement('div'); bar.id = 'bar';
 bar.innerHTML = `<button class="b" id="bClaude"><span class="i">✳</span>Claude settings</button>

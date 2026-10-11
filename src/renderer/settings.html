@@ -58,6 +58,13 @@
 <script>if (new URLSearchParams(location.search).has('card')) { document.documentElement.classList.add('card'); addEventListener('keydown', e => { if (e.key === 'Escape') window.sphere.overlayClose(); }); }</script>
 <h1 id="title">Theseus</h1>
 
+<!-- UpdateButton_Spec: the version, Check now, and Update + What's new only while an update is ready -->
+<section data-card="general" id="updSec">
+  <div class="row"><label><span id="updVer">Theseus</span><small id="updNote">Up to date</small></label>
+    <button id="updNotes" hidden>What's new</button><button id="updCheck">Check now</button><button id="updGo" hidden>Update</button></div>
+  <pre id="updText" hidden style="white-space:pre-wrap;margin:0 0 8px;color:var(--dim);font:12px/1.4 inherit"></pre>
+</section>
+
 <!-- data-card: which bar card shows the section (General = centre button, Theseus = right); the plain window shows all -->
 <section data-card="general">
   <h2>Display</h2>
@@ -295,6 +302,20 @@
 
 <script src="bgshader.js"></script>
 <script>
+{ // update line (UpdateButton_Spec)
+  const $ = id => document.getElementById(id), go = $('updGo'), chk = $('updCheck'), nb = $('updNotes'), txt = $('updText');
+  const show = s => {
+    if (!s) return; const on = s.kind !== 'none';
+    $('updVer').textContent = `Theseus ${s.current}${s.dev ? ' (dev copy)' : ''}`;
+    $('updNote').textContent = s.waiting ? 'Updating after the swap…' : s.kind === 'dev' ? 'New code on master: restart to load it' : on ? `Version ${s.version} is downloaded and ready` : s.downloading ? `Downloading version ${s.downloading}…` : s.checkedAt ? `Up to date (checked ${new Date(s.checkedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })})` : 'Up to date';
+    go.hidden = !on; go.disabled = !!s.waiting; go.textContent = s.kind === 'dev' ? 'Restart' : 'Update';
+    nb.hidden = !(on && s.notes); txt.textContent = s.notes || ''; if (!on) txt.hidden = true;
+  };
+  window.sphere.update().then(show); window.sphere.onUpdate(show);
+  go.onclick = () => window.sphere.updateInstall();
+  nb.onclick = () => { txt.hidden = !txt.hidden; };
+  chk.onclick = async () => { chk.disabled = true; chk.textContent = 'Checking…'; try { show(await window.sphere.updateCheck()); } finally { chk.disabled = false; chk.textContent = 'Check now'; } };
+}
 const VOICES = { 'British male': ['bm_lewis', 'bm_george', 'bm_daniel', 'bm_fable'], 'British female': ['bf_emma', 'bf_isabella', 'bf_alice', 'bf_lily'],
   'American male': ['am_michael', 'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam', 'am_onyx', 'am_puck'],
   'American female': ['af_heart', 'af_bella', 'af_nicole', 'af_sarah', 'af_sky', 'af_alloy', 'af_aoede', 'af_jessica', 'af_kore', 'af_nova', 'af_river'] };

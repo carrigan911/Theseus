@@ -6,6 +6,10 @@ contextBridge.exposeInMainWorld('sphere', {
   front: on => ipcRenderer.send('front', on),
   sphereArea: a => ipcRenderer.send('sphere-area', a),               // { x, y, r }: the folded sphere's circle in window DIPs
   onOccluded: cb => ipcRenderer.on('occluded', (_e, on) => cb(on)),  // true while apps cover the folded sphere
+  update: () => ipcRenderer.invoke('update-state'),                  // UpdateButton_Spec: { kind: 'none'|'dev'|'release', version, notes, current, dev, waiting }
+  onUpdate: cb => ipcRenderer.on('update', (_e, s) => cb(s)),
+  updateInstall: () => ipcRenderer.invoke('update-install'),
+  updateCheck: () => ipcRenderer.invoke('update-check'),
   settings: () => ipcRenderer.invoke('settings'),
   onSettings: cb => ipcRenderer.on('settings', (_e, s) => cb(s)),
   setSettings: patch => ipcRenderer.invoke('set-settings', patch),

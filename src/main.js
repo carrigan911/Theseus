@@ -2573,11 +2573,12 @@ if (gotLock) app.whenReady().then(() => {
   if (settings.hotkeys) hk.register();
 
   // ---- tray ----
-  let trayT = null;
+  let trayT = null, updater = null, updWait = false;   // (the updater is made with the session manager, below)
   function trayDirty() { clearTimeout(trayT); trayT = setTimeout(() => { if (tray && !tray.isDestroyed()) rebuild(); }, 200); }
   function trayExtra() {
-    const recOn = !!(rState && rState.recording);
+    const recOn = !!(rState && rState.recording), up = updater ? updater.state() : { kind: 'none' };
     return [
+      ...(up.kind === 'none' ? [] : [{ type: 'separator' }, { label: updWait ? 'Updating after the swap…' : up.kind === 'dev' ? 'Restart to update' : `Update to ${up.version}`, enabled: !updWait, click: () => updInstall() }]),
       { type: 'separator' },
       { label: 'Mode', submenu: modeItems() },
       { label: 'Output', submenu: devItems('out') },
@@ -2652,6 +2653,22 @@ if (gotLock) app.whenReady().then(() => {
     cap: text => vCap('', text), say: text => { if (settings.askSpeak) say(text); }, modeChanged: () => {},
     changed: () => { if (settings.manageOn) { lastFeed = mgr.apply(rawFeed || lastFeed); feedOut(); } },
   });
+  // update button (UpdateButton_Spec): the sphere pill, tray item and Settings button show only once an update is ready;
+  // the install waits for swaps, then quits the normal way (close animation, the Claude window put back)
+  const updState = () => ({ ...(updater ? updater.state() : { kind: 'none' }), current: app.getVersion(), dev: !app.isPackaged, waiting: updWait });
+  const updOut = () => { const s = updState(); for (const w of [settingsWin, win]) if (alive(w)) w.webContents.send('update', s); trayDirty(); };
+  updater = require('./updater').create({ log, dev: !app.isPackaged, root: path.join(__dirname, '..'), version: app.getVersion(), onState: updOut });
+  updater.start();
+  async function updInstall() {
+    const k = updater.state().kind; if (k === 'none') return { ok: false, why: 'no update is waiting' };
+    if (updWait) return { ok: true };
+    updWait = true; updOut(); log(`update: install (${k}), after any swap`);
+    while (Object.keys(mgr.state().swaps).length) await new Promise(r => setTimeout(r, 5000));
+    updater.apply(app); return { ok: true };
+  }
+  ipcMain.handle('update-state', e => fromUi(e) ? updState() : null);
+  ipcMain.handle('update-install', e => fromUi(e) ? updInstall() : { ok: false, why: 'bad call' });
+  ipcMain.handle('update-check', async e => { if (!fromUi(e)) return null; await updater.check(); return updState(); });
   rulesI = require('./rules').create({ claudeDir: P.claudeDir, dir: app.getPath('userData'), log });
   ipcMain.handle('manage-act', async (e, a) => {
     if (!(fromWin(e) || fromSettings(e)) || !a || typeof a !== 'object') return { ok: false, why: 'bad call' };

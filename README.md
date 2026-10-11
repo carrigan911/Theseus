@@ -105,7 +105,7 @@ uses the app's own `claude://` link.
   - Python with Whisper, for voice questions.
 
 ## Install
-1. Run `Theseus Setup x.y.z.exe`. The installer is unsigned, so Windows SmartScreen warns the first time. Choose
+1. Run `Theseus-Setup-x.y.z.exe`. The installer is unsigned, so Windows SmartScreen warns the first time. Choose
    **More info → Run anyway**.
 2. The Setup card opens on first start. There you set:
    - the assistant name;
@@ -114,6 +114,10 @@ uses the app's own `claude://` link.
 
    The card also lists the tools it found. All of these can be changed later under General settings.
 3. Start with Windows is a switch in General settings.
+
+**Updates:** Theseus checks GitHub for a new release when it starts and every 6 hours. It downloads it in the
+background, then shows an **Update to x.y.z** button on top of the sphere, in the tray menu and in Settings. Clicking it
+installs the update and restarts Theseus. You can check by hand with **Check now** in Settings.
 
 To uninstall, use Windows Settings → Apps → Theseus.
 
@@ -135,5 +139,5 @@ MIT, see [LICENSE](LICENSE).
 ```
 npm install
 npm start          # run
-npm run dist       # dist/Theseus Setup x.y.z.exe
+npm run dist       # dist/Theseus-Setup-x.y.z.exe, its .blockmap and latest.yml
 ```

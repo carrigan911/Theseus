@@ -1,6 +1,6 @@
 {
   "name": "session-sphere",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Theseus: a desktop session sphere for your Claude Code sessions (unofficial)",
   "main": "src/main.js",
@@ -9,6 +9,7 @@
     "dist": "electron-builder --win nsis"
   },
   "dependencies": {
+    "electron-updater": "6.6.2",
     "three": "0.186.1"
   },
   "devDependencies": {
@@ -20,7 +21,10 @@
     "appId": "app.sessionsphere",
     "productName": "Theseus",
     "asar": false,
-    "electronLanguages": ["en-US"],
+    "electronLanguages": [
+      "en-US"
+    ],
+    "publish": [{ "provider": "github", "owner": "carrigan911", "repo": "Theseus" }],
     "directories": {
       "output": "dist"
     },
@@ -40,7 +44,8 @@
       "allowToChangeInstallationDirectory": true,
       "createStartMenuShortcut": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Theseus"
+      "shortcutName": "Theseus",
+      "artifactName": "Theseus-Setup-${version}.${ext}"
     }
   }
 }
