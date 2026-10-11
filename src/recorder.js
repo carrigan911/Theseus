@@ -1,4 +1,4 @@
-// Screen recorder for Session Sphere (Theseus tools, part B). Own code; the ffmpeg command lines are adapted from the old Mode Buttons recorder.
+// Screen recorder for Theseus (tools, part B). Own code; the ffmpeg command lines are adapted from the old Mode Buttons recorder.
 // Video: ffmpeg ddagrab (screen / region) or gfxcapture (window, gdigrab as fallback) -> hevc_nvenc cq 23, 60 fps (no NVIDIA:
 // hevc_amf, else software libx264; found once by a one-frame test encode).
 // Audio: a hidden capture page (renderer/capture.html) records the system sound (getDisplayMedia, audio 'loopback') and the mic (getUserMedia)

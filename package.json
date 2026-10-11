@@ -2,7 +2,7 @@
   "name": "session-sphere",
   "version": "0.1.0",
   "private": true,
-  "description": "A desktop sphere of your Claude Code sessions (unofficial)",
+  "description": "Theseus: a desktop session sphere for your Claude Code sessions (unofficial)",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
@@ -18,7 +18,7 @@
   "author": "carrigan911",
   "build": {
     "appId": "app.sessionsphere",
-    "productName": "Session Sphere",
+    "productName": "Theseus",
     "asar": false,
     "directories": {
       "output": "dist"
@@ -39,7 +39,7 @@
       "allowToChangeInstallationDirectory": true,
       "createStartMenuShortcut": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Session Sphere"
+      "shortcutName": "Theseus"
     }
   }
 }

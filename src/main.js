@@ -1,4 +1,4 @@
-// Theseus (Session Sphere) main process: transparent desktop-layer window on half a screen (or all of it), click-through outside the sphere.
+// Theseus main process: transparent desktop-layer window on half a screen (or all of it), click-through outside the sphere.
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, shell, globalShortcut, dialog } = require('electron');
 const { execFile } = require('child_process');
 const fs = require('fs');
@@ -17,6 +17,7 @@ let lastFeed = { sessions: [] };
 const attn = new Map();   // sessionId -> { note, at }: a session asked for the user (its needs_you tool); the tile shows it waiting
 
 if (process.env.SPHERE_USERDATA) app.setPath('userData', process.env.SPHERE_USERDATA);   // tests: own settings + lock, so a test instance runs beside the real one
+else app.setPath('userData', path.join(app.getPath('appData'), 'session-sphere'));      // fixed folder: the product name (Session Sphere -> Theseus) must not move the settings
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
 const defaults = {
   side: 'left', display: 'primary', glow: '#3da5ff',
@@ -321,11 +322,10 @@ function createWindow() {
 // Start with Windows: unpackaged, the login item must run electron.exe with this app's folder (and the feed path, if one is set)
 function setAutostart() {
   if (process.env.SPHERE_USERDATA) return;   // a test instance never touches the real login item (it would drop it)
-  const o = { openAtLogin: !!settings.autostart, name: app.isPackaged ? 'Session Sphere' : 'Theseus' };   // installed: the product's own Run entry
+  const o = { openAtLogin: !!settings.autostart, name: 'Theseus' };
   if (!app.isPackaged) { o.path = process.execPath; o.args = [app.getAppPath()]; }
   app.setLoginItemSettings(o);
-  if (app.isPackaged) return;
-  // renamed from Session Sphere (user 10-9): drop the old Run entry so it does not start twice
+  // renamed from Session Sphere (user 10-9, installer 10-10): drop the old Run entry so it does not start twice
   app.setLoginItemSettings({ ...o, openAtLogin: false, name: 'Session Sphere' });
 }
 // test pictures of the sphere window itself, even under other windows: SPHERE_SHOTS="<dir>;<count>;<ms apart>" (first after 8 s)

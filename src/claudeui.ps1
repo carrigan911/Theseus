@@ -1,4 +1,4 @@
-# Session Sphere helper: drives the Claude desktop window through Windows UI Automation + user32.
+# Theseus helper: drives the Claude desktop window through Windows UI Automation + user32.
 # Reads one JSON command per stdin line, writes one JSON reply per line:
 #   {"cmd":"snap"}                         -> title, project, mode, sidebar open, nav / routines / pinned names, window rect
 #   {"cmd":"invoke","name":"Artifacts"}    -> presses that button (opens the sidebar for a moment when the item lives there)

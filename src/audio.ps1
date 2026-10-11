@@ -1,4 +1,4 @@
-# Session Sphere audio + voice helper (one long-lived PowerShell with inline C#, started by audio.js with -MTA).
+# Theseus audio + voice helper (one long-lived PowerShell with inline C#, started by audio.js with -MTA).
 # Reads one JSON command per stdin line, writes one JSON reply per line (the reply repeats the command's "id").
 # Pushed lines (no id) have an "event": state | command | listening | heard | error | ready.
 #   {"cmd":"get"}                                      -> {"state":{out:{id,name,vol,mute},mic:{..},outs:[{id,name}],mics:[..]}}
