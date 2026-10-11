@@ -388,6 +388,8 @@ namespace SsAudio
             new[] { "start recording", "recStart", "" }, new[] { "stop recording", "recStop", "" },
             new[] { "save replay", "saveReplay", "" },
             new[] { "screenshot", "screenshot", "" }, new[] { "take a screenshot", "screenshot", "" },
+            new[] { "stop talking", "hush", "" }, new[] { "be quiet", "hush", "" }, new[] { "quiet please", "hush", "" },
+            new[] { "shush", "hush", "" }, new[] { "that's enough", "hush", "" }, new[] { "shut up", "hush", "" },
             new[] { "mode normal", "mode", "normal" }, new[] { "mode worker", "mode", "worker" },
             new[] { "mode night", "mode", "night" }, new[] { "mode weekend", "mode", "weekend" },
             new[] { "mode max performance", "mode", "performance" }, new[] { "mode max efficiency", "mode", "efficiency" }
@@ -432,6 +434,7 @@ namespace SsAudio
         // Voice Ask: "Theseus" + anything that is not a command (push-to-talk: any phrase) is a question for Claude; its audio
         // goes to a wave file for Whisper. Follow-up: for a while after an answer a phrase without the wake word counts too
         public static volatile bool AskOn;
+        public const double SureCmd = 0.85;   // a command under this goes past Whisper first (with Ask on)
         public const double MinQuestionS = 1.2;   // "Theseus" alone is about 0.8 s
         static DateTime followUntil = DateTime.MinValue;
         static Grammar qFree; static Timer followT; static DateTime wakeHint = DateTime.MinValue;
@@ -613,6 +616,16 @@ namespace SsAudio
             if (conf < MinFor(m)) { J.Line("{\"event\":\"heard\",\"text\":" + J.S(txt) + ",\"confidence\":" + J.N(conf) + ",\"accepted\":false}"); return; }
             // wake: the phrase began with the wake word (always mode accepts phrases with or without it; main acts on stop / save only with it)
             bool wk = IsWake(txt);
+            // not sure of it (the grammar picks its nearest phrase: "start a new session" came out "screenshot" at 0.69): with
+            // Ask on, Whisper hears it first and main runs the guess only if Whisper agrees (or cannot answer)
+            if (AskOn && conf < SureCmd && cmd != "hush" && e.Result.Audio != null)   // a wrong hush only ends speech: no check, no delay
+            {
+                string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SessionSphere"); System.IO.Directory.CreateDirectory(dir);
+                string p = System.IO.Path.Combine(dir, "q_" + DateTime.UtcNow.Ticks + ".wav");
+                using (var fs = System.IO.File.Create(p)) e.Result.Audio.WriteToWaveStream(fs);
+                J.Line("{\"event\":\"question\",\"wav\":" + J.S(p) + ",\"sec\":" + J.N(e.Result.Audio.Duration.TotalSeconds) + ",\"confidence\":" + J.N(conf) + ",\"follow\":false,\"guess\":{\"cmd\":" + J.S(cmd) + ",\"arg\":" + J.S(arg) + ",\"text\":" + J.S(txt) + ",\"confidence\":" + J.N(conf) + ",\"wake\":" + J.B(wk) + "}}");
+                return;
+            }
             J.Line("{\"event\":\"command\",\"cmd\":" + J.S(cmd) + (arg != "" ? ",\"arg\":" + J.S(arg) : "") + ",\"text\":" + J.S(txt) + ",\"confidence\":" + J.N(conf) + ",\"wake\":" + J.B(wk) + "}");
         }
 

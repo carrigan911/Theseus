@@ -22,7 +22,7 @@ const defaults = {
   side: 'left', display: 'primary', glow: '#3da5ff',
   fps: 30, renderScale: 1.5, labelRes: 1024,                 // frame cap (0 = display rate), supersampling, label pixels
   closeDelay: 3, spinMinutes: 2, idleGlow: 0.3,             // fold-back delay (s), one turn every N min (0 = still), idle core
-  autoFold: true, keepCardsOpen: true, tileActivity: true, contextRing: true, speechCaption: true, voiceAsk: true, askActions: true, sessionTools: true, sessionSpeak: true, sessionsMessage: false, askWeb: true, askSpeak: true, claudeTray: false, tileWear: 0, tileSwap: 6, tileWearPreview: false, tileSwapPreview: false,   // tile rows fold back after the delay; an open card or menu stays until closed; working / waiting / idle looks
+  autoFold: true, keepCardsOpen: true, tileActivity: true, contextRing: true, speechCaption: true, voiceAsk: true, askActions: true, sessionTools: true, sessionSpeak: true, sessionsMessage: false, askWeb: true, askSpeak: true, alertFinished: true, alertWaiting: true, alertPermission: true, claudeTray: false, tileWear: 0, tileSwap: 6, tileWearPreview: false, tileSwapPreview: false,   // tile rows fold back after the delay; an open card or menu stays until closed; working / waiting / idle looks
   glowOnSpeech: true, voice: 'bm_lewis', voiceSpeed: 1.0, voiceCycle: false, voiceCycleList: [], voiceCycleMgr: '',   // talking glow; EchoStatus default voice (stateoice.json)
   autostart: false,
   sphereSize: 'medium', sphereGrowth: true, emptySpots: 'tiles', rowTileSize: 'large',   // small / medium / large / xlarge; growth: the sphere grows with the session count
@@ -68,7 +68,7 @@ const VOICE = v => typeof v === 'string' && /^[a-z]{2}_[a-z0-9_]{1,30}$/i.test(v
 const RULES = {
   side: en('left', 'right', 'full'), display: v => typeof v === 'string' && v.length <= 40 ? v : typeof v === 'number' && isFinite(v) ? String(v) : undefined,
   glow: col, fps: nm(0, 240), renderScale: nm(0.5, 4), labelRes: v => { v = nm(256, 4096)(v); return v === undefined ? v : Math.round(v); },
-  closeDelay: nm(0, 60), spinMinutes: nm(0, 120), idleGlow: nm(0, 1), autoFold: bl, keepCardsOpen: bl, claudeTray: bl, tileActivity: bl, contextRing: bl, speechCaption: bl, voiceAsk: bl, askActions: bl, sessionTools: bl, sessionSpeak: bl, sessionsMessage: bl, askWeb: bl, askSpeak: bl, tileWear: v => { v = nm(0, 12)(v); return v === undefined ? v : Math.round(v); }, tileSwap: en(1, 2, 3, 4, 5, 6), tileWearPreview: bl, tileSwapPreview: bl, glowOnSpeech: bl,
+  closeDelay: nm(0, 60), spinMinutes: nm(0, 120), idleGlow: nm(0, 1), autoFold: bl, keepCardsOpen: bl, claudeTray: bl, tileActivity: bl, contextRing: bl, speechCaption: bl, voiceAsk: bl, askActions: bl, sessionTools: bl, sessionSpeak: bl, sessionsMessage: bl, askWeb: bl, askSpeak: bl, alertFinished: bl, alertWaiting: bl, alertPermission: bl, tileWear: v => { v = nm(0, 12)(v); return v === undefined ? v : Math.round(v); }, tileSwap: en(1, 2, 3, 4, 5, 6), tileWearPreview: bl, tileSwapPreview: bl, glowOnSpeech: bl,
   voice: VOICE, voiceSpeed: nm(0.5, 2), voiceCycle: bl, voiceCycleList: v => Array.isArray(v) ? v.filter(x => VOICE(x)).slice(0, 80) : undefined,
   voiceCycleMgr: v => typeof v === 'string' && v.length <= 100 ? v : undefined, autostart: bl,
   sphereSize: en('small', 'medium', 'large', 'xlarge'), sphereGrowth: bl, emptySpots: en('tiles', 'open'), rowTileSize: en('large', 'medium', 'small'), tileAlign: en('left', 'center', 'right'), flatShape: en('regular', 'hexagon'), coreFollowsMode: bl, modeMotion: bl, spikeStrength: nm(0, 2),
@@ -136,12 +136,32 @@ function nextVoice() {
 }
 let builtin = null;   // the built-in Windows voice (src/speech.js), started on first use when the External voice add-on is off
 function speak(line, done) {   // done: after the line has played (or failed)
+  // a test instance (own userData) stays silent unless asked: its profile has no voice set, so it would use the Windows voice
+  // (it still takes about as long as the line would, so "stop talking" can be tested)
+  if (process.env.SPHERE_USERDATA && !process.env.SPHERE_SPEAK_OK) {
+    const t = { fake: true, done, timer: setTimeout(() => { speaking.delete(t); if (done) done(); }, Math.min(8000, 300 + String(line).length * 40)) };
+    speaking.add(t); return;
+  }
   if (!P.voiceExt()) {
     if (!builtin) builtin = require('./speech').create({ state: P.builtinVoice() });
     builtin.say(line, { speed: settings.voiceSpeed }).then(() => { if (done) done(); });
     return;
   }
-  execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(P.echo(), 'speak.ps1'), line, '-Voice', settings.voice, '-Speed', String(settings.voiceSpeed)], { windowsHide: true }, () => { if (done) done(); });
+  const c = execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(P.echo(), 'speak.ps1'), line, '-Voice', settings.voice, '-Speed', String(settings.voiceSpeed)], { windowsHide: true }, () => { speaking.delete(c); if (done) done(); });
+  speaking.add(c);
+}
+const speaking = new Set();   // speak.ps1 runs now playing or synthesizing
+// "stop talking": end every line playing now (speak.ps1 with its Kokoro python and player; the built-in voice helper) and
+// drop the speaking flags it would have removed, so the caption and core glow end with it
+function stopSpeech() {
+  for (const c of speaking) {
+    if (c.fake) { clearTimeout(c.timer); if (c.done) c.done(); continue; }
+    execFile('taskkill.exe', ['/F', '/T', '/PID', String(c.pid)], { windowsHide: true }, () => {});
+    const st = P.echo() && path.join(P.echo(), 'state');
+    if (st) for (const x of ['flag', 'txt', 'env.json']) fs.unlink(path.join(st, `speaking_${c.pid}.${x}`), () => {});
+  }
+  speaking.clear();
+  if (builtin) { builtin.dispose(); builtin = null; }
 }
 function writeVoice() { try { if (P.echo()) fs.writeFileSync(path.join(P.echo(), 'state', 'voice.json'), JSON.stringify({ voice: settings.voice, speed: settings.voiceSpeed })); } catch {} }
 // rect (content DIPs of the sphere window) = show it as a rounded card over the panel, like the chat card; none = a normal window
@@ -1013,9 +1033,9 @@ if (gotLock) app.whenReady().then(() => {
     conStop(); trayNoted = null; if (attn.delete(sessionId)) feedOut();
     const s = sessFor(sessionId);
     if (!s) return { ok: false, why: 'unknown session' };
+    conId = sessionId;   // the open card, even with nothing to show (voice card commands, alerts skip it)
     const file = transcriptOf(sessionId);
     if (!file) return { ok: false, why: 'no transcript for this session' };
-    conId = sessionId;
     conRd = require('./transcript').open(file, (msgs, init, pending) => { if (conId === sessionId && win && !win.isDestroyed()) win.webContents.send('console-msg', { sessionId, msgs, init, pending }); });
     return { ok: true, title: s.title, link: linkOf(s), awaiting: awaitOf(sessionId) };
   });
@@ -1602,6 +1622,7 @@ if (gotLock) app.whenReady().then(() => {
     audio.on('state', onAudio);
     audio.on('listening', b => { listening = !!b; pushTools(); });
     audio.on('command', c => runCommand(c));
+    if (process.env.SPHERE_USERDATA) audio.on('heard', h => log('heard (not acted on): ' + JSON.stringify(h)));   // tests: what the grammar turned down
     audio.get().then(s => s ? onAudio(s) : log('audio.get: ' + audio.lastError)).catch(e => log('audio.get failed: ' + (e && e.message)));
     listenNow();
   }
@@ -1644,7 +1665,8 @@ if (gotLock) app.whenReady().then(() => {
         case 'recStop': { if (!(rState && rState.recording)) { speak('Not recording.'); break; } await acts.recStop(); speak('Recording saved.'); break; }
         case 'saveReplay': await acts.saveReplay(); speak(settings.replay ? 'Replay saved.' : 'The replay is off.'); break;
         case 'screenshot': await acts.screenshot(); speak('Screenshot saved.'); break;
-        case 'mode': if (MODES.includes(c.arg)) { setModeNotice(c.arg); speak(`${T.MODE_NAMES[c.arg]} mode requested.`); } break;
+        case 'mode': if (MODES.includes(c.arg)) { modeUndo(); setModeNotice(c.arg); speak(`${T.MODE_NAMES[c.arg]} mode requested.`); } break;
+        case 'hush': hush(); break;
         default: log('voice: unknown command ' + c.cmd);
       }
     } catch (e) { log(`voice ${c.cmd} failed: ${e && e.message}`); notify(`${c.cmd} failed`, 3000); speak('That did not work.'); if (c.quiet) throw e; }
@@ -1666,8 +1688,16 @@ if (gotLock) app.whenReady().then(() => {
     for (let i = 1; i <= a.length; i++) { const c = [i]; for (let j = 1; j <= b.length; j++) c[j] = Math.min(p[j] + 1, c[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); p = c; }
     return p[b.length] <= Math.max(1, Math.floor(a.length * 0.15));
   }
-  let phrases = null, asking = false, askHist = [], askDay = '', askCount = 0, sayP = Promise.resolve();
-  const say = line => (sayP = sayP.then(() => new Promise(r => speak(line, r))));   // "One moment." and the answer never overlap
+  let phrases = null, asking = false, askHist = [], askDay = '', askCount = 0, sayP = Promise.resolve(), sayGen = 0;
+  // "One moment." and the answer never overlap; a "stop talking" (hush) drops the lines queued before it
+  const say = line => {
+    const g = sayGen;
+    return (sayP = sayP.then(() => g !== sayGen ? null : new Promise(r => {
+      const t0 = Date.now(); if (process.env.SPHERE_USERDATA) log('say: ' + line);
+      speak(line, () => { if (process.env.SPHERE_USERDATA) log(`said (${Date.now() - t0} ms): ${line}`); r(); });
+    })));
+  };
+  function hush() { sayGen++; const n = speaking.size; stopSpeech(); log(`hush: ${n} playing stopped`); }
   function askMode() { if (!audio) return; audio.ask(askOn()).catch(() => {}); if (!askOn() && whisper) whisper.stop(); }
   async function askSnapshot() {
     await refreshSys(true).catch(() => null);
@@ -1718,6 +1748,7 @@ if (gotLock) app.whenReady().then(() => {
   function voiceSend(s, text) {
     return sessionSend(s.sessionId, text).then(r => {
       const what = text === null ? `Stopped ${s.title}.` : `Sent to ${s.title}.`;
+      if (r.ok && text !== null) setUndo(`the message to ${s.title} (stopped it)`, () => sessionSend(s.sessionId, null));
       vCap('', r.ok ? what : `Not ${text === null ? 'stopped' : 'sent'}: ${r.why}`); vSay(r.ok ? what : `I couldn't ${text === null ? 'stop' : 'send'} that.`);
     });
   }
@@ -1841,7 +1872,19 @@ if (gotLock) app.whenReady().then(() => {
     log(`console voice: new session in ${best.fo} <- "${out}"`);
     voiceLater(text, `New session in ${best.fo}: ${out}`, `New session in ${best.fo}.`, () => sessionNew(best.fo, null, out).then(r => {
       vCap('', r.ok ? `Started ${r.title} in ${best.fo}.` : `Not started: ${r.why}`); vSay(r.ok ? 'Started.' : "I couldn't start it.");
+      if (r.ok) openStarted(r);
     }));
+    return true;
+  }
+  // a session started by voice or Ask: its conversation opens in the wide card, as after the New session form's Start
+  function openStarted(r) { showWin(); toWin('voice-open', { sessionId: r.sessionId, title: r.title || '' }); log(`console voice: open new "${r.title}"`); }
+  // "show the tiles / open the sphere / tile view": the rows spread out as on a hover; "fold the tiles / close the sphere" folds them
+  const TILES_RE = /^(?:(?:open|show(?: me)?|bring up|pull up|spread(?: out)?|unfold|expand|go to)(?: up| out)? (?:(?:the|all|all the|all my|my) )?(?:sphere|tiles?|tile view|tiles view|session tiles|rows)(?: view)?(?: out| up)?|tile view|tiles view|spread (?:out )?(?:the )?(?:tiles|sphere|rows)(?: out)?)$/;
+  const FOLD_RE = /^(?:fold|close|collapse|hide)(?: up)? (?:(?:the|all|all the|my) )?(?:sphere|tiles?|tile view|tiles view|rows)(?: up)?$/;
+  function voiceTiles(text, n) {
+    const sp = TILES_RE.test(n); if (!sp && !FOLD_RE.test(n)) return false;
+    if (sp) { showWin(); setUndo('tile view', () => toWin('voice-open', { fold: true })); }
+    toWin('voice-open', sp ? { spread: true } : { fold: true }); vCap(text, sp ? 'Tile view.' : 'Folded.'); log('console voice: ' + (sp ? 'tile view' : 'fold'));
     return true;
   }
   function voiceForm(text, folder) {
@@ -1881,6 +1924,164 @@ if (gotLock) app.whenReady().then(() => {
     const go = () => { if (vPend !== p) return; p.timer = setTimeout(() => { if (vPend === p) { vPend = null; vCap('', 'Not stopped.'); } }, 5000); if (askOn()) audio.follow(5000).catch(() => {}); };
     if (settings.askSpeak) say(`Stop ${s.title}?`).then(go); else go();
   }
+  // ---- Voice gaps (Docs/Specs/VoiceGaps_Spec.md): undo, spoken alerts, local answers, voice settings, card control ----
+  // undo: the last voice change for 2 min ({ what, run }); a sent message is undone by stopping that session
+  let lastUndo = null;
+  const setUndo = (what, run) => { lastUndo = { at: Date.now(), what, run }; };
+  function modeUndo() { const prev = curMode && (curMode.pending || curMode.mode); if (prev) setUndo(`back to ${T.MODE_NAMES[prev] || prev} mode`, () => setModeNotice(prev)); }
+  function setSetting(k, v, label) {
+    const old = settings[k]; settings[k] = v; if (k === 'voice' || k === 'voiceSpeed') writeVoice(); saveSettings(); pushSettings();
+    setUndo(label, () => { settings[k] = old; if (k === 'voice' || k === 'voiceSpeed') writeVoice(); saveSettings(); pushSettings(); });
+  }
+  function voiceUndo(text, n) {
+    if (!/^(undo|undo that|undo it|undo the last one|take that back|revert that)$/.test(n)) return false;
+    const u = lastUndo; lastUndo = null;
+    if (!u || Date.now() - u.at > 120000) { vCap(text, 'Nothing to undo.'); vSay('Nothing to undo.'); return true; }
+    log('console voice: undo ' + u.what); Promise.resolve(u.run()).catch(e => log('undo failed: ' + (e && e.message)));
+    vCap(text, 'Undone: ' + u.what + '.'); vSay('Undone.'); return true;
+  }
+
+  // spoken alerts: a session that worked 20 s and then stayed idle 5 s finished; one that waits on the user (a question, a plan,
+  // a reply ending in a question) or on a permission (2 s) says so. Changes within 3 s are said together. Not for the session
+  // whose card is open, parked ones or the Session manager's own turns; the states found at start are not news
+  const alertSt = new Map();   // sessionId -> { act, since, workFrom, worked, said }
+  let alertBuf = null;         // { finished: [titles], waiting: [...], permission: [...], timer }
+  function alertAct(s) { return awaiting.get(s.sessionId) === true ? 'permission' : s.activity || 'idle'; }
+  function alertTrack(f) {
+    const now = Date.now(), seen = new Set();
+    for (const s of (f && f.sessions) || []) {
+      if (!s.title || s.group === 'Parked') continue;
+      seen.add(s.sessionId);
+      const a = alertAct(s), st = alertSt.get(s.sessionId);
+      if (!st) { alertSt.set(s.sessionId, { act: a, since: now, workFrom: a === 'working' ? now : 0, worked: 0, said: a }); continue; }
+      if (a === st.act) continue;
+      if (st.act === 'working') st.worked = now - st.workFrom;
+      if (a === 'working' && st.act !== 'working') st.workFrom = now;
+      st.act = a; st.since = now;
+    }
+    for (const id of alertSt.keys()) if (!seen.has(id)) alertSt.delete(id);
+  }
+  setInterval(() => {
+    const now = Date.now(); alertTrack(lastFeed);   // the awaiting map changes without a feed change
+    for (const [id, st] of alertSt) {
+      if (st.act === st.said) continue;
+      if (st.act === 'working') { st.said = 'working'; continue; }
+      if (now - st.since < (st.act === 'idle' ? 5000 : 2000)) continue;
+      const kind = st.act === 'idle' ? (st.said === 'working' && st.worked >= 20000 ? 'finished' : null) : st.act;
+      st.said = st.act;
+      const s = (lastFeed.sessions || []).find(x => x.sessionId === id);
+      if (!kind || !s || id === conId) continue;
+      if (kind === 'finished' && s.group === 'Session Manager') continue;
+      if (!settings[{ finished: 'alertFinished', waiting: 'alertWaiting', permission: 'alertPermission' }[kind]]) continue;
+      if (!alertBuf) alertBuf = { finished: [], waiting: [], permission: [], timer: setTimeout(alertSay, 3000) };
+      alertBuf[kind].push(String(s.title).replace(/\s*\([^)]*\)\s*$/, ''));
+    }
+  }, 1000);
+  function alertSay() {
+    const b = alertBuf; alertBuf = null; if (!b) return;
+    const and = l => l.length > 1 ? l.slice(0, -1).join(', ') + ' and ' + l[l.length - 1] : l[0];
+    const parts = [b.finished.length && `${and(b.finished)} finished.`, b.waiting.length && `${and(b.waiting)} ${b.waiting.length > 1 ? 'need' : 'needs'} you.`,
+      b.permission.length && `${and(b.permission)} ${b.permission.length > 1 ? 'ask' : 'asks'} permission.`].filter(Boolean);
+    if (!parts.length) return;
+    const line = parts.join(' '); log('alert: ' + line);
+    vCap('', line); if (settings.askSpeak) say(line);
+  }
+
+  // answers the feed has: no Claude call (about 1 s instead of 4 to 5)
+  const pctOf = s => s.pct != null ? Math.round(s.pct * 100) : null;
+  function stateLine(s) {
+    const a = alertAct(s), p = a === 'waiting' || a === 'permission' ? pendingOfS(s) : null;
+    if (a === 'permission') return `${s.title} is waiting for ${p ? pendingText(p).replace(/:.*$/, '') : 'permission'}.`;
+    if (a === 'waiting') return `${s.title} is waiting for you${p && p.kind === 'ask' ? ': ' + p.questions[0].question : p && p.kind === 'plan' ? ' to approve its plan' : ''}.`;
+    if (a === 'working') return `${s.title} is working.`;
+    const t = lastReply(s), first = t && t.replace(/\s+/g, ' ').split(/(?<=[.!?])\s/)[0];
+    return `${s.title} is idle.${first ? ' Last: ' + first.slice(0, 200) : ''}`;
+  }
+  function localAnswer(text, ans) { log(`local answer: "${text}" -> ${ans}`); vCap(text, ans); if (settings.askSpeak) say(asker ? asker.spoken(ans) : ans); return true; }
+  function voiceStatus(text, n) {
+    const live = () => (lastFeed.sessions || []).filter(s => s.title && s.group !== 'Parked');
+    const names = l => l.length > 1 ? l.slice(0, -1).join(', ') + ' and ' + l[l.length - 1] : l[0];
+    let m;
+    if ((m = n.match(/^what (?:is|s) (.+?) (?:doing|up to|working on)$/))) {
+      const f = findSession(m[1].split(' '), true); if (!f) return false;
+      return localAnswer(text, stateLine(f.s) + (pctOf(f.s) != null ? ` Context ${pctOf(f.s)} percent.` : ''));
+    }
+    if (/^(?:(?:which|what) sessions? (?:need|needs|are waiting (?:on|for)) (?:me|you|my attention)|who needs me|(?:does )?any(?:one|body|thing) need me|is anyone waiting(?: on me| for me)?|who is waiting(?: on me| for me)?)$/.test(n)) {
+      const w = live().filter(s => ['waiting', 'permission'].includes(alertAct(s)));
+      return localAnswer(text, w.length ? w.map(stateLine).join(' ') : 'Nobody needs you right now.');
+    }
+    if ((m = n.match(/^how full is (.+?)(?: s context| context)?$/)) || (m = n.match(/^how much context (?:does|has) (.+?) (?:have |got )?(?:used|left)$/))) {
+      const f = findSession(m[1].split(' '), true); if (!f) return false;
+      const p = pctOf(f.s);
+      return localAnswer(text, p == null ? `I don't know how full ${f.s.title} is.` : `${f.s.title} is at ${p} percent of its swap line.`);
+    }
+    if (/^(?:what s|what is|which sessions are|who is|who s|what are) (?:running|working)(?: now| right now)?$/.test(n)) {
+      const w = live().filter(s => s.activity === 'working').map(s => s.title);
+      return localAnswer(text, w.length ? `${names(w)} ${w.length > 1 ? 'are' : 'is'} working.` : 'Nothing is working right now.');
+    }
+    return false;
+  }
+
+  // the voice and its speed, spoken answers and alerts, by voice
+  const KOKORO = ['bm_lewis', 'bm_george', 'bm_daniel', 'bm_fable', 'bf_emma', 'bf_isabella', 'bf_alice', 'bf_lily', 'am_michael', 'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam',
+    'am_onyx', 'am_puck', 'af_heart', 'af_bella', 'af_nicole', 'af_sarah', 'af_sky', 'af_alloy', 'af_aoede', 'af_jessica', 'af_kore', 'af_nova', 'af_river'];
+  function voiceSettings(text, n) {
+    let m;
+    if (/^(?:change|switch|next|another|a different|different|new) (?:the |your )?voice$|^change your voice$|^use (?:a|another|a different) voice$/.test(n)) {
+      if (!P.voiceExt()) { vCap(text, 'Only the external voice has other voices.'); vSay('I only have the one voice.'); return true; }
+      const list = (settings.voiceCycleList || []).length ? settings.voiceCycleList : KOKORO;
+      const v = list[(list.indexOf(settings.voice) + 1) % list.length];
+      setSetting('voice', v, 'the voice change'); log('console voice: voice ' + v);
+      vCap(text, `Voice: ${v}.`); say("How's this?"); return true;
+    }
+    if ((m = n.match(/^(?:speak|talk) (faster|quicker|slower|more slowly)$|^(speed up|slow down)$/))) {
+      const up = /faster|quicker|speed up/.test(m[1] || m[2]);
+      const v = Math.round(Math.min(1.5, Math.max(0.7, (Number(settings.voiceSpeed) || 1) + (up ? 0.1 : -0.1))) * 10) / 10;
+      setSetting('voiceSpeed', v, 'the speed change'); log('console voice: speed ' + v);
+      vCap(text, `Speed ${v}.`); say(v === 1.5 || v === 0.7 ? "That's as far as it goes." : 'Like this?'); return true;
+    }
+    if ((m = n.match(/^turn (?:off|on) (?:speech|talking|your voice|spoken answers|the voice)$|^turn (?:speech|talking|your voice|spoken answers|the voice) (?:off|on)$|^(stop|start) speaking (?:answers|out loud)$/))) {
+      const on = m[1] ? m[1] === 'start' : / on$|^turn on/.test(n);
+      setSetting('askSpeak', on, `spoken answers ${on ? 'on' : 'off'}`); log('console voice: askSpeak ' + on);
+      vCap(text, on ? 'Spoken answers on.' : 'Spoken answers off: captions only.'); if (on) say('Speaking again.'); return true;
+    }
+    if ((m = n.match(/^turn (?:the )?alerts? (on|off)$|^turn (on|off) (?:the )?alerts?$|^(mute|unmute) (?:the )?alerts?$/))) {
+      const on = (m[1] || m[2]) ? (m[1] || m[2]) === 'on' : m[3] === 'unmute';
+      const old = { f: settings.alertFinished, w: settings.alertWaiting, p: settings.alertPermission };
+      settings.alertFinished = settings.alertWaiting = settings.alertPermission = on; saveSettings(); pushSettings();
+      setUndo(`alerts ${on ? 'on' : 'off'}`, () => { settings.alertFinished = old.f; settings.alertWaiting = old.w; settings.alertPermission = old.p; saveSettings(); pushSettings(); });
+      log('console voice: alerts ' + on); vCap(text, `Spoken alerts ${on ? 'on' : 'off'}.`); vSay(`Alerts ${on ? 'on' : 'off'}.`); return true;
+    }
+    return false;
+  }
+
+  // the open card by voice: type into its reply box, send, clear, close, next / previous tile, scroll, open in Claude
+  function voiceCard(text, n) {
+    let op = null, arg = null;
+    if (/^(?:type|write|dictate|reply)\b/.test(n) && n.split(' ').length >= 2) {
+      op = 'type'; arg = text.trim().split(/\s+/).slice(1).join(' ').replace(/^[,.:;\s-]+/, '');
+      if (/^reply\b/.test(n)) { const w = arg.split(/\s+/); if (/^(with|that)$/i.test(w[0])) arg = w.slice(1).join(' '); }
+      arg = arg.charAt(0).toUpperCase() + arg.slice(1);
+    }
+    else if (/^(?:send it|send that|send this|send the message|send|send now)$/.test(n)) op = 'send';
+    else if (/^(?:clear it|clear that|clear the box|clear the message|delete that|erase that|scratch that)$/.test(n)) op = 'clear';
+    else if (/^(?:close|hide|leave)(?: the| this)? (?:card|chat|conversation|console|session card)$|^close it$|^go back$/.test(n)) op = 'close';
+    else if (/^(?:next|the next) (?:tile|session|card|one)$/.test(n)) op = 'next';
+    else if (/^(?:previous|prev|last|the previous|back one) (?:tile|session|card|one)$/.test(n)) op = 'prev';
+    else if (/^(?:scroll|page) (up|down)(?: a bit| more| some)?$/.test(n)) op = 'scroll', arg = n.match(/(up|down)/)[1];
+    else if (/^(?:scroll|go|jump) to the (top|bottom|end|start|beginning)$/.test(n)) op = 'scroll', arg = /top|start|beginning/.test(n) ? 'top' : 'bottom';
+    else if (/^open (?:it |this |that )?in (?:the )?claude(?: app)?$|^show (?:it |this )?in claude$/.test(n)) op = 'claude';
+    if (!op) return false;
+    const s = conId && sessFor(conId);
+    if (!s && op !== 'close') { vCap(text, 'No session card is open. Say "open <session>" first.'); vSay('No card is open.'); return true; }
+    if (op === 'type' && !arg) return false;
+    if (op === 'send' && !settings.appControl) { vCap(text, 'Sending needs App control (General settings).'); vSay('That needs App control.'); return true; }
+    if (op === 'send') setUndo(`the message to ${s.title} (stopped it)`, () => sessionSend(s.sessionId, null));
+    showWin(); toWin('voice-card', { op, text: arg });
+    log(`console voice: card ${op}${arg ? ' ' + arg : ''}`);
+    if (op === 'type') vCap(text, `Typed: ${arg}`);
+    return true;
+  }
   async function voiceSession(text, n) {
     // Whisper writes what it heard: "Okay, can you open …", "Opened a test session", "Starting a new session in …", "… please"
     // (the same lead-in comes off the spoken text too, so its words line up with n's: "tell" counts words of both)
@@ -1895,8 +2096,10 @@ if (gotLock) app.whenReady().then(() => {
     n = n.replace(/ please$/, '').replace(/^(open|start|show|launch)(?:ed|ing|s)\b/, '$1').replace(/^(creat|mak)(?:ed|ing|es)\b/, '$1e').replace(/^(began|beginning)\b/, 'begin');
     const w = n.split(' '), raw = text.split(/\s+/).filter(x => norm(x));
     let m;
+    if (voiceUndo(text, n) || voiceCard(text, n) || voiceSettings(text, n) || voiceStatus(text, n)) return true;
     if (w[0] === 'answer' && w.length >= 2 && voiceAnswer(text, w)) return true;
     if (/^(always allow|allow|deny|approve|accept|reject) /.test(n) && voiceWait(text, n)) return true;
+    if (voiceTiles(text, n)) return true;
     if (voiceNew(text, n)) return true;
     if (voiceOpen(text, n)) return true;
     if ((m = n.match(/^what (did|has|does) (.+?) (say|said|says|replied|reply)$/))) {
@@ -2022,7 +2225,7 @@ if (gotLock) app.whenReady().then(() => {
     start_session: a => {
       if (!settings.appControl) throw new Error('App control is off (General settings): sessions cannot be started.');
       const fo = projectOf(a.project), task = String(a.task || '').trim(); if (!task) throw new Error('no task given');
-      return queue({ what: `New session in ${fo}: ${task}`, spoken: `New session in ${fo}.`, act: () => sessionNew(fo, null, task).then(r => done_(r.ok, `Started ${r.title} in ${fo}.`, `Not started: ${r.why}`)) });
+      return queue({ what: `New session in ${fo}: ${task}`, spoken: `New session in ${fo}.`, act: () => sessionNew(fo, null, task).then(r => { if (r.ok) openStarted(r); return done_(r.ok, `Started ${r.title} in ${fo}.`, `Not started: ${r.why}`); }) });
     },
     send_message: a => {
       const s = sessOf(a.session), t = String(a.text || '').trim(); if (!t) throw new Error('no text given');
@@ -2169,17 +2372,21 @@ if (gotLock) app.whenReady().then(() => {
   }
   async function onQuestion(q) {
     const rm = () => { if (q.wav) fs.unlink(q.wav, () => {}); };
-    if (asking || !(askOn() || q.test && asker)) { rm(); return; }   // q.test: a typed question from the test hook (no Whisper)
+    // q.guess: a command the grammar was unsure of; it runs as heard when Whisper cannot check it
+    const asHeard = () => { log(`voice: ${q.guess.cmd} unchecked`); runCommand(q.guess); };
+    if (asking || !(askOn() || q.test && asker)) { rm(); if (q.guess) asHeard(); return; }   // q.test: a typed question from the test hook (no Whisper)
     asking = true; const t0 = Date.now();
     try {
-      let text; if (q.test) text = q.text; else try { text = (await whisper.transcribe(q.wav)).text; } finally { rm(); }
+      let text; if (q.test) text = q.text; else try { text = (await whisper.transcribe(q.wav)).text; } catch (e) { if (!q.guess) throw e; asHeard(); return; } finally { rm(); }
       text = String(text || '').replace(wakeRe(), '').trim();
       const n = norm(text);
+      if (q.guess) log(`voice: unsure ${q.guess.cmd} "${q.guess.text}" (${q.guess.confidence}), Whisper heard "${text}"`);
+      else if (!q.test) log(`voice: Whisper heard "${text}"`);
       if (voicePending(n)) return;                                               // "cancel" / "yes" for a voice reply or stop
-      if (n.split(' ').length < 2) { log(`ask: dropped "${text}"`); return; }   // "Theseus" in passing
       if (!phrases) phrases = await audio.phrases().catch(() => null);
       const hit = (phrases || []).find(p => near(norm(p[0]), n));   // Whisper spellings: "mode knight", "mute mike"
       if (hit) { log(`ask: "${text}" is a command`); runCommand({ cmd: hit[1], arg: hit[2], text, confidence: 1, wake: true }); return; }
+      if (n.split(' ').length < 2) { log(`ask: dropped "${text}"`); return; }   // "Theseus" in passing
       if (await voiceSession(text, n)) return;                                   // "tell X …", "what did X say", "stop X"
       toWin('ask', { state: 'thinking', q: text });
       let r, tools = null;
@@ -2289,10 +2496,10 @@ if (gotLock) app.whenReady().then(() => {
   setInterval(() => { const k = JSON.stringify(P.addons()); if (k !== addonKey) { addonKey = k; pushSettings(); onSettingsChanged({ addons: true }); } }, 20000);
 
   // ---- test hooks: STRIP_SHOTS="<dir>;<count>;<ms apart>" pictures of the strip / toast / settings windows (first after 6 s);
-  // STRIP_SCRIPT="3000:muteMic,5000:voice:status,6000:voice:mode:worker,9000:ask:q1.wav" runs actions at those times (ask: a wave in %TEMP%SessionSphere; askq:<text> a typed question; send:<sessionId>:<text> types into that session, SPHERE_SEND_OK=1 needed)
+  // STRIP_SCRIPT="3000:muteMic,5000:voice:status,6000:voice:mode:worker,9000:ask:q1.wav" runs actions at those times (ask: a wave in %TEMP%SessionSphere, ask:<wav>:<cmd> as an unsure command; askq:<text> a typed question; send:<sessionId>:<text> types into that session, SPHERE_SEND_OK=1 needed; vnew:<id>:<title> opens a just-started session's card; hear:<wav in SPHERE_USERDATA> listens to that file as the mic, always mode)
   if (process.env.STRIP_SCRIPT) for (const it of process.env.STRIP_SCRIPT.split(',')) {
     const [ms, kind, a, b] = it.split(':');
-    setTimeout(() => { if (kind === 'askq') onQuestion({ text: a, test: true }); else if (kind === 'ask') { const s = path.join(app.getPath('temp'), 'SessionSphere', a), d = s + '.' + Date.now() + '.wav'; fs.copyFileSync(s, d); onQuestion({ wav: d }); } else if (kind === 'say') { const t = a, n = norm(t); log('say test: ' + t); if (!voicePending(n)) voiceSession(t, n).then(r => log('say test handled: ' + r)); } else if (kind === 'send') sessionSend(a, b || null).then(r => log('send test: ' + JSON.stringify(r))); else if (kind === 'js' && process.env.SPHERE_USERDATA) win.webContents.executeJavaScript(fs.readFileSync(path.join(process.env.SPHERE_USERDATA, a), 'utf8')).then(r => log('js test: ' + JSON.stringify(r)), e => log('js test failed: ' + e.message)); else if (kind === 'voice') runCommand({ cmd: a, arg: b, text: 'test', confidence: 1, wake: true }); else act(kind, a ? (isNaN(+a) ? a : +a) : undefined); }, +ms);
+    setTimeout(() => { if (kind === 'askq') onQuestion({ text: a, test: true }); else if (kind === 'ask') { const s = path.join(app.getPath('temp'), 'SessionSphere', a), d = s + '.' + Date.now() + '.wav'; fs.copyFileSync(s, d); onQuestion({ wav: d, guess: b ? { cmd: b, arg: '', text: 'Theseus ' + b, confidence: 0.69, wake: true } : undefined }); } else if (kind === 'say') { const t = a, n = norm(t); log('say test: ' + t); if (!voicePending(n)) voiceSession(t, n).then(r => log('say test handled: ' + r)); } else if (kind === 'hear' && audio) { settings.voiceCmd = 'always'; audio.testInput(path.join(process.env.SPHERE_USERDATA || '', a)).then(() => audio.ask(askOn())).then(() => { listenNow(); log('hear test: ' + a + ', ask ' + askOn()); }); } else if (kind === 'vnew') openStarted({ sessionId: 'new:' + a, title: b }); else if (kind === 'send') sessionSend(a, b || null).then(r => log('send test: ' + JSON.stringify(r))); else if (kind === 'js' && process.env.SPHERE_USERDATA) win.webContents.executeJavaScript(fs.readFileSync(path.join(process.env.SPHERE_USERDATA, a), 'utf8')).then(r => log('js test: ' + JSON.stringify(r)), e => log('js test failed: ' + e.message)); else if (kind === 'voice') runCommand({ cmd: a, arg: b, text: 'test', confidence: 1, wake: true }); else act(kind, a ? (isNaN(+a) ? a : +a) : undefined); }, +ms);
   }
   if (process.env.STRIP_SHOTS) {
     const [dir, count = 1, ms = 1000] = process.env.STRIP_SHOTS.split(';'); let i = 0;

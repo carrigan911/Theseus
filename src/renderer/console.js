@@ -903,5 +903,13 @@ export function createConsole(host) {
   // App control off: read-only (no reply box, questions, new session, mode, rename / fork / rewind)
   let appOn = true;
   function setAppControl(on) { appOn = !!on; root.classList.toggle('noapp', !appOn); }
-  return { open, openNew, close, place, feed, setAppControl, get on() { return !!cur; }, get session() { return cur; } };
+  // voice (VoiceGaps_Spec item 3): dictation into the reply box, send, clear, scroll, open in the Claude app
+  const voice = {
+    type(t) { if (!cur || formOn) return; const v = ta.value.trim(); ta.value = v ? v + ' ' + t : t; grow(); draftNow(cur); },
+    send() { if (cur && !formOn) send(); },
+    clear() { if (!cur || formOn) return; ta.value = ''; grow(); draftNow(cur); },
+    scroll(d) { const k = list.clientHeight * 0.8; if (d === 'top') list.scrollTop = 0; else if (d === 'bottom') list.scrollTop = list.scrollHeight; else list.scrollBy({ top: d === 'up' ? -k : k, behavior: 'smooth' }); },
+    claude() { if (cur) { const s = cur; close(); host.openClaude(s); } },
+  };
+  return { open, openNew, close, place, feed, setAppControl, voice, get on() { return !!cur; }, get session() { return cur; } };
 }

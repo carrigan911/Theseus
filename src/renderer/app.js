@@ -123,7 +123,7 @@ function labelScale() {
 }
 // the sphere sits under other windows, which still pass it the pointer: it opens only if nothing covers it there
 // (one check in flight, at most every 200 ms; the answer is for the pointer's latest place)
-let coverAt = 0, coverBusy = false, px = -1, py = -1;
+let coverAt = 0, coverBusy = false, px = -1, py = -1, holdTill = 0;
 function pointer(x, y) {
   px = x; py = y;
   const o = inside(x, y) || overChips(x, y);
@@ -131,14 +131,15 @@ function pointer(x, y) {
     coverAt = performance.now(); coverBusy = true;
     window.sphere.covered().then(c => { coverBusy = false; if (!c && !spreadOn && inside(px, py)) startSpread(); }, () => { coverBusy = false; });
   }
-  closeAt = !o && spreadOn && !busy() && autoFold ? closeAt || performance.now() + CLOSE_MS : 0;  // off the rows: fold back after a few seconds
+  if (o) holdTill = 0;   // a voice "tile view" holds until the pointer has been on the rows
+  closeAt = !o && spreadOn && !busy() && autoFold && performance.now() > holdTill ? closeAt || performance.now() + CLOSE_MS : 0;  // off the rows: fold back after a few seconds
   if (o !== over) { over = o; window.sphere.hit(o); wake(); }
 }
 addEventListener('mousemove', e => { pointer(e.clientX, e.clientY); hoverTile(e.clientX, e.clientY); });
 // a click-through window gets no events once the pointer has left it, so ask main where the pointer is while open;
 // the fold runs here too, so it happens even when the frame loop is throttled
 setInterval(() => { syncFold(performance.now()); if (spreadOn) window.sphere.cursor().then(p => pointer(p.x, p.y)); }, 250);
-addEventListener('mouseleave', () => { if (spreadOn && !closeAt && !busy() && autoFold) closeAt = performance.now() + CLOSE_MS; if (over) { over = false; window.sphere.hit(false); } });
+addEventListener('mouseleave', () => { if (spreadOn && !closeAt && !busy() && autoFold && performance.now() > holdTill) closeAt = performance.now() + CLOSE_MS; if (over) { over = false; window.sphere.hit(false); } });
 
 // flat rows: the tile under the pointer lights up and lifts; a click opens that session in the Claude window, which sits
 // over the middle of the background until a click lands outside it (then it goes back and the rows fold in)
@@ -765,10 +766,32 @@ function caption(t) {
 // Voice Ask: "You: <question>" while Claude thinks (the core breathes slowly), then the whole answer (the voice reads the first
 // sentences); it fades 4 s after the voice ends, or after 12 s when it is not spoken (errors: 6 s)
 // a voice "open <title>": as a press on that tile
+// "tile view": the rows spread and stay until the pointer has been on them (or VOICE_HOLD_MS), then fold as after a hover
+const VOICE_HOLD_MS = 20000;
 window.sphere.onVoiceOpen?.(a => {
   if (!a) return;
+  if (a.spread) { holdTill = performance.now() + VOICE_HOLD_MS; closeAt = 0; if (!spreadOn) startSpread(); return; }
+  if (a.fold) { holdTill = 0; if (overlayOn) closeCard(); fold(); return; }
+  if (!spreadOn) startSpread();   // the card sits over the rows: spread them (and bring the window in front) first
   if (a.sessionId == null) { openConsole(null, null, a.folder); return; }
-  const s = (realFeed.sessions || []).find(x => x.sessionId === a.sessionId); if (s) openTile(s, false, false);
+  const s = (realFeed.sessions || []).find(x => x.sessionId === a.sessionId);
+  if (s) openTile(s, false, false);
+  else if (/^new:/.test(a.sessionId)) openConsole({ sessionId: a.sessionId, title: a.title || '' });   // just started: not in the feed yet
+});
+// voice on the open card (VoiceGaps_Spec items 3 and 4); next / previous: the neighbouring session tile in reading order of the rows
+window.sphere.onVoiceCard?.(a => {
+  if (!a) return;
+  if (a.op === 'close') { if (overlayOn) closeCard(); return; }
+  if (a.op === 'next' || a.op === 'prev') {
+    if (!spreadOn) startSpread();
+    const ms = sphere.meshes().filter(m => m.visible && m.userData.session && (m.userData.session.link || m.userData.session.reader) && m.geometry.userData.fc);
+    const pts = ms.map(m => ({ s: m.userData.session, p: tileScreen(m) })).sort((x, y) => Math.abs(x.p.y - y.p.y) > 20 ? x.p.y - y.p.y : x.p.x - y.p.x);
+    const cur = con.session, i = cur ? pts.findIndex(q => q.s.sessionId === cur.sessionId) : -1;
+    const q = pts.length && pts[((i < 0 ? (a.op === 'next' ? -1 : 0) : i) + (a.op === 'next' ? 1 : -1) + pts.length) % pts.length];
+    if (q) openTile(q.s, false, false);
+    return;
+  }
+  if (con.on && con.voice[a.op]) con.voice[a.op](a.text);
 });
 window.sphere.onAsk?.(a => {
   if (!a) return;
