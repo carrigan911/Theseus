@@ -1,6 +1,6 @@
 {
   "name": "session-sphere",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Theseus: a desktop session sphere for your Claude Code sessions (unofficial)",
   "main": "src/main.js",
@@ -20,6 +20,7 @@
     "appId": "app.sessionsphere",
     "productName": "Theseus",
     "asar": false,
+    "electronLanguages": ["en-US"],
     "directories": {
       "output": "dist"
     },

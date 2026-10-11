@@ -32,7 +32,7 @@ function create(api) {
   const t0 = Date.now();
   const S = () => api.settings();
   const file = path.join(api.dir, 'manage.json'), logFile = path.join(api.dir, 'manage.log');
-  let st = { groups: {}, alias: {}, moved: {}, renewed: {}, queue: [], swaps: {}, skips: {}, resumed: {}, mode: 'normal', sched: null, warned: {} };
+  let st = { groups: {}, alias: {}, moved: {}, renewed: {}, fresh: {}, queue: [], swaps: {}, skips: {}, resumed: {}, mode: 'normal', sched: null, warned: {} };
   try { st = { ...st, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch {}
   for (const [id, m] of Object.entries(st.moved || {})) {   // clear-swapped sessions read their new conversation after a restart too
     if (m && m.file && Date.now() - m.at < 7 * 864e5 && fs.existsSync(m.file)) api.setMoved(id, m.file); else delete st.moved[id];
@@ -95,12 +95,12 @@ function create(api) {
     const line = S().swapTokens || 200000;
     // Cleared: the old transcript of a clear-swapped session (built-in reader); a reprompted conversation not yet taken over
     // (the reader names it after the reprompt) stays hidden, so it gets the old tile's seat instead of one of its own
-    const pending = Object.values(st.swaps).filter(w => (w.stage === 'resent' || w.stage === 'casked') && w.dir && w.askWall);
-    const unclaimed = s => {   // born in a clearing session's folder since its ask
+    const pending = Object.values(st.swaps).filter(w => w.stage === 'resent' && w.dir && w.askWall && w.file);
+    const unclaimed = s => {   // born in a clearing session's folder since its ask, opening with its reprompt
       if (!pending.length || !s.reader || st.alias[s.sessionId]) return false;
       const tf = api.transcriptOf(s.sessionId); if (!tf) return false;   // (the built feed leaves the paths out)
       let b; try { b = fs.statSync(tf).birthtimeMs; } catch { return false; }
-      return pending.some(w => !same(tf, w.old) && same(path.dirname(tf), w.dir) && b >= w.askWall - 2000);
+      return pending.some(w => !same(tf, w.old) && same(path.dirname(tf), w.dir) && b >= w.askWall - 2000 && opensWith(tf, path.basename(w.file)));
     };
     const sessions = f.sessions.filter(s => st.groups[s.sessionId] !== 'Cleared' && !unclaimed(s)).map(s => {
       const g = st.groups[s.sessionId] || (s.group === 'Session Manager' ? s.group : null);
@@ -151,6 +151,13 @@ function create(api) {
     const id = s.sessionId, w = st.swaps[id], t = now();
     if (!w) {
       if (!due(s) || !idle(s)) return;
+      // just swapped and already at the line (the line is below what a fresh session holds: tools and rules): swapping again
+      // would loop, so it waits for its next mark and says why once
+      const fr = st.fresh[id];
+      if (fr && Date.now() - fr < 30 * 60000 && (s.tokens || 0) >= (S().swapTokens || 200000)) {
+        skip(s); save(); warn('fresh:' + id, `${baseTitle(s.title)} is over its swap line right after a swap (${Math.round((s.tokens || 0) / 1000)}k tokens). Raise the line in Settings.`);
+        return;
+      }
       if (!appCtl()) { warn('line:' + id, `${s.title} is at its swap line. Swap it by hand (App control is off).`); return; }
       const method = S().swapMethod === 'new' ? 'new' : 'clear', verb = method === 'clear' ? 'Clear-swapping' : 'Swapping';
       unwarn(id);
@@ -231,7 +238,9 @@ function create(api) {
       if (!n.ok) { if (t - w.at > 5 * 60000) { log(`swap "${w.title}": naming the fresh one failed (${n.why}); archiving the old one anyway`); } else return; }
       const a = await act('manage', id, 'archive');
       log(`swap "${w.title}": old one archived: ${a.ok ? 'ok' : a.why}`);
-      st.groups[id] = 'Archived'; delete st.swaps[id]; unwarn(id); unlinkQ(w.file); save();
+      st.groups[id] = 'Archived'; delete st.swaps[id]; unwarn(id); unlinkQ(w.file);
+      const nid = String(w.newId || '').replace(/^new:/, ''); if (nid) st.fresh[nid] = Date.now();
+      save();
       api.cap(`${w.title} swapped to a fresh session.`);
     }
   }
@@ -266,6 +275,14 @@ function create(api) {
   }
   // a transcript in `dir` born after `at` (not `old`), whose first 1 MB holds every string in `keys` -> its path
   const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+  // does transcript `f` open with `key` (its first 64 KB)? A full head never changes, so a yes or a full head's no is kept
+  const heads = new Map();
+  function opensWith(f, key) {
+    const k = f + '|' + key; if (heads.has(k)) return heads.get(k);
+    const t = readFrom(f, 0, 64 << 10, true); if (!t) return false;   // not written yet: ask again later
+    const r = t.includes(key); if (r || t.length >= 60 << 10) heads.set(k, r); if (heads.size > 200) heads.delete(heads.keys().next().value);
+    return r;
+  }
   function newIn(dir, at, old, keys) {
     let names = []; try { names = fs.readdirSync(dir).filter(n => n.endsWith('.jsonl')); } catch { return null; }
     for (const n of names) {
@@ -282,6 +299,8 @@ function create(api) {
     api.setMoved(id, nf); st.moved[id] = { file: nf, at: Date.now() };   // kept, so a restart still reads the new conversation
     for (const [k, v] of Object.entries(st.renewed)) if (!v || Date.now() - v.at > 864e5) delete st.renewed[k];
     st.renewed[s.reader ? nid : id] = { at: Date.now(), from: id, pct: s.pct != null ? s.pct : null };
+    for (const [k, v] of Object.entries(st.fresh)) if (Date.now() - v > 864e5) delete st.fresh[k];
+    st.fresh[s.reader ? nid : id] = Date.now();
     if (s.reader) {   // the built-in reader names sessions by transcript: the new one takes over the tile
       st.groups[nid] = st.groups[id] || 'Active'; st.alias[nid] = w.title; st.groups[id] = 'Cleared';
       cpCache.set(nid, w.cp); delete st.skips[nid];

@@ -132,9 +132,27 @@ async function tasks(file) {
   let st; try { st = await fs.promises.stat(file); } catch { st = null; }
   const ck = st ? st.size + ':' + st.mtimeMs : '', hit = taskCache.get(file);
   if (hit && ck && hit.k === ck) return hit.r;
-  const r = await tasksRead(file);
-  if (ck) { taskCache.delete(file); taskCache.set(file, { k: ck, r }); if (taskCache.size > 40) taskCache.delete(taskCache.keys().next().value); }
+  const r = await viaWorker(file);
+  if (ck && r && r.ok) { taskCache.delete(file); taskCache.set(file, { k: ck, r }); if (taskCache.size > 40) taskCache.delete(taskCache.keys().next().value); }
   return r;
+}
+// the parse runs in a worker thread (taskworker.js), so a big transcript never stalls the main process; in-process when the
+// worker is not there (it failed to start, died or took over 30 s)
+let tw = null, twSeq = 0;
+const twWait = new Map();
+function viaWorker(file) {
+  if (!require('worker_threads').isMainThread) return tasksRead(file);
+  if (!tw) {
+    let w; try { const { Worker } = require('worker_threads'); w = new Worker(path.join(__dirname, 'taskworker.js')); } catch { return tasksRead(file); }
+    const down = () => { if (tw !== w) return; tw = null; for (const x of twWait.values()) { clearTimeout(x.t); x.res(null); } twWait.clear(); };
+    w.on('message', m => { const x = twWait.get(m.id); if (x) { twWait.delete(m.id); clearTimeout(x.t); x.res(m.r); } });
+    w.on('error', down); w.on('exit', down); w.unref(); tw = w;
+  }
+  const w = tw, id = ++twSeq;
+  return new Promise(res => {
+    const t = setTimeout(() => { twWait.delete(id); res(null); w.terminate().catch(() => {}); }, 30000);   // hung: a fresh worker next time
+    twWait.set(id, { res, t }); w.postMessage({ id, file });
+  }).then(r => r || tasksRead(file));
 }
 async function tasksRead(file) {
   const byUse = new Map(), byTask = new Map(), list = [];
@@ -290,4 +308,4 @@ async function worktreeRemove(dir, wt) {
   const r = it.prunable ? await run('git', ['worktree', 'prune'], w.list[0].path) : await run('git', ['worktree', 'remove', it.path], w.list[0].path, 60000);
   return r.ok ? { ok: true, out: 'Worktree removed' } : { ok: false, why: why(r) };
 }
-module.exports = { changes, fileDiff, pr, tasks, artifacts, commit, pushInfo, push, prDraft, prCreate, worktrees, worktreeRemove, defaultBranch, isWorktree, exe };
+module.exports = { changes, fileDiff, pr, tasks, tasksRead, artifacts, commit, pushInfo, push, prDraft, prCreate, worktrees, worktreeRemove, defaultBranch, isWorktree, exe };
