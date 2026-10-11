@@ -41,7 +41,22 @@ export function createChips() {
   }
   const chips = [chip('model', 'Model'), chip('effort', 'Effort'), chip('mode', 'Mode')];
   const head = el('span', 'cht');
-  bar.append(head, ...chips, note);
+  // session management (SessionManagement_Spec): a Queue chip with park / resume / queue order / swap, shown while it is on
+  let manageOn = false;
+  const qChip = el('button', 'chip'); qChip.append(el('span', 'chk', 'Queue'), el('span', 'chv', ''), el('span', 'cha', '▾'));
+  qChip.onclick = e => { e.stopPropagation(); if (cur) qMenu(qChip); };
+  function qMenu(b) {
+    const parked = cur.group === 'Parked', items = parked
+      ? [{ label: 'Resume now', act: 'resume' }, { label: 'First in the queue', act: 'first' }, { label: 'Last in the queue', act: 'last' }]
+      : [{ label: 'Park', act: 'park', sub: 'checkpoint, commit, stop' }, { label: 'Swap now', act: 'swap', sub: 'fresh session from the checkpoint' }, { label: "Don't swap", act: 'noswap', sub: 'until its next line' }];
+    dropMenu(b, items, async it => {
+      const t = tok; note.textContent = 'Working…'; note.className = 'chn';
+      const r = await window.sphere.manage({ act: it.act, id: cur.sessionId }).catch(e => ({ ok: false, why: e.message }));
+      if (t !== tok) return;
+      note.textContent = r && r.ok ? 'Done' : (r && r.why) || 'not done'; note.className = r && r.ok ? 'chn' : 'chn bad';
+    });
+  }
+  bar.append(head, ...chips, qChip, note);
   function show() {
     for (const b of chips) {
       const w = b.dataset.w, v = val ? val[w] || '?' : '…';
@@ -69,6 +84,7 @@ export function createChips() {
   async function open(s, x, y) {
     close(); cur = s; const t = ++tok; val = null; busy = ''; note.textContent = ''; note.className = 'chn';
     head.textContent = s.title || ''; head.title = s.title || '';
+    qChip.style.display = manageOn ? '' : 'none'; qChip.querySelector('.chv').textContent = s.group || '';
     show(); bar.style.display = 'flex';
     const w = bar.offsetWidth, h = bar.offsetHeight;
     bar.style.left = Math.max(8, Math.min(innerWidth - w - 8, x - w / 2)) + 'px';
@@ -85,5 +101,5 @@ export function createChips() {
   }
   bar.addEventListener('click', e => e.stopPropagation());
   bar.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); });
-  return { open, close, get on() { return !!cur; }, contains: n => bar.contains(n) || !!(n.closest && n.closest('.cmenu')) };
+  return { open, close, setManage: v => { manageOn = !!v; }, get on() { return !!cur; }, contains: n => bar.contains(n) || !!(n.closest && n.closest('.cmenu')) };
 }

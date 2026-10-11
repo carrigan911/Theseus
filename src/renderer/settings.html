@@ -15,7 +15,7 @@
   h2 + .row { border-top: 0; }
   .row label { flex: 1; }
   .row small { display: block; color: var(--dim); font-size: 12px; }
-  select, input[type=number], input[type=password], input[type=text] { background: #262624; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 130px; }
+  select, input[type=number], input[type=password], input[type=text], input[type=time] { background: #262624; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 130px; }
   input[type=color] { width: 54px; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: #262624; padding: 2px; }
   input[type=range] { width: 130px; accent-color: var(--accent); }
   input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
@@ -32,6 +32,10 @@
   .row .tf label { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-size: 13px; }
   button:disabled { opacity: .4; cursor: default; }
   #bgThumbs { display: flex; gap: 6px; width: 100%; }
+  #manageSec .mmsg input[type=text] { flex: 1; margin-left: 24px; min-width: 0; }
+  input[type=time] { color-scheme: dark; min-width: 0; width: 122px; }
+  #manageSec pre { width: 100%; max-height: 260px; overflow: auto; margin: 0; padding: 8px; background: #121211; border: 1px solid var(--line); border-radius: 7px; font: 11.5px/1.4 Consolas, monospace; color: var(--dim); white-space: pre-wrap; }
+  #capRow input { width: 42px; }
   #bgThumbs button { flex: 1 1 0; min-width: 0; background: #262624; border: 1px solid var(--line); border-radius: 7px; padding: 3px 2px 4px; color: var(--dim); font-size: 11px; line-height: 1.2; }
   #bgThumbs button.on { border-color: var(--accent); color: var(--text); }
   #bgThumbs canvas { display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: 4px; margin-bottom: 2px; }
@@ -226,6 +230,33 @@
   <div class="row"><label>Max perf spikes<small>Peaks and bursts on the core (0 = none)</small></label><input type="range" min="0" max="1" step="0.05" data-k="spikeStrength" data-num><span class="val"></span></div>
 </section>
 
+<section data-card="theseus" id="manageSec">
+  <h2>Session management</h2>
+  <div class="row"><label>Manage sessions<small><span class="nm">Theseus</span> swaps sessions at their swap line, keeps the mode on a schedule, and parks and resumes sessions. Off: it only shows them</small></label><input type="checkbox" data-k="manageOn"></div>
+  <div class="row mgr" id="mgrWarn" style="display:none"><label><small id="mgrWarnText"></small></label><button id="mgrOutsideOk" style="display:none">Manage anyway</button></div>
+  <div class="row mgr"><label>Fresh-session swaps<small>At the swap line a session updates its checkpoint and commits; a fresh one continues from it and the old one is archived. 30 s to say cancel, or right-click its tile: Queue, Don&#39;t swap</small></label><input type="checkbox" data-k="manageSwaps"></div>
+  <div class="row mgr"><label>Swap line<small>Context tokens</small></label><input type="number" min="50000" max="1000000" step="10000" data-k="swapTokens" data-num></div>
+  <div class="row mgr"><label>Age limit<small>Minutes a session may run before a swap (0 = no limit)</small></label><input type="number" min="0" max="1440" step="10" data-k="swapAgeMin" data-num></div>
+  <div class="row mgr"><label>Modes and schedule<small><span class="nm">Theseus</span> keeps the mode itself; Night and Weekend start and end on their own</small></label><input type="checkbox" data-k="manageModes"></div>
+  <div class="row mgr"><label>Night<small>From / to, every day</small></label><span class="mrow"><input type="checkbox" data-k="nightOn"><input type="time" data-k="nightFrom"><input type="time" data-k="nightTo"></span></div>
+  <div class="row mgr"><label>Weekend<small>From Friday / to Monday</small></label><span class="mrow"><input type="checkbox" data-k="weekendOn"><input type="time" data-k="weekendFrom"><input type="time" data-k="weekendTo"></span></div>
+  <div class="row mgr"><label>Parking and queue<small>Parked sessions wait in the queue and resume, in order, while fewer than the mode's cap are working</small></label><input type="checkbox" data-k="manageQueue"></div>
+  <div class="row mgr"><label>Queue at night<small>Off: Night and Weekend start nothing new from the queue</small></label><input type="checkbox" data-k="queueAtNight"></div>
+  <div class="row mgr"><label>Running caps<small>Normal, Worker, Night, Weekend, Max perf, Max efficiency</small></label><span class="mrow" id="capRow"><input type="number" min="0" max="20" data-cap="normal" title="Normal"><input type="number" min="0" max="20" data-cap="worker" title="Worker"><input type="number" min="0" max="20" data-cap="night" title="Night"><input type="number" min="0" max="20" data-cap="weekend" title="Weekend"><input type="number" min="0" max="20" data-cap="performance" title="Max perf"><input type="number" min="0" max="20" data-cap="efficiency" title="Max efficiency"></span></div>
+  <div class="row mgr"><label>Mode messages<small>Sent to the active sessions on entering a mode (blank = none)</small></label></div>
+  <div class="row mgr mmsg"><label>Normal</label><input type="text" maxlength="400" data-mm="normal" spellcheck="false"></div>
+  <div class="row mgr mmsg"><label>Worker</label><input type="text" maxlength="400" data-mm="worker" spellcheck="false"></div>
+  <div class="row mgr mmsg"><label>Night</label><input type="text" maxlength="400" data-mm="night" spellcheck="false"></div>
+  <div class="row mgr mmsg"><label>Weekend</label><input type="text" maxlength="400" data-mm="weekend" spellcheck="false"></div>
+  <div class="row mgr mmsg"><label>Max perf</label><input type="text" maxlength="400" data-mm="performance" spellcheck="false"></div>
+  <div class="row mgr mmsg"><label>Max efficiency</label><input type="text" maxlength="400" data-mm="efficiency" spellcheck="false"></div>
+  <div class="row mgr"><label>Working rules<small id="rulesState"></small></label><span class="mrow"><button id="rulesPrev">Preview</button><button id="rulesIn">Install</button><button id="rulesOut">Remove</button></span></div>
+  <div class="row mgr"><label>Auto-compact window<small>Tokens, written by Install (0 = leave it)</small></label><input type="number" min="0" max="1000000" step="10000" data-k="compactWindow" data-num></div>
+  <div class="row mgr" id="rulesPreRow" style="display:none"><pre id="rulesPre"></pre></div>
+  <div class="row mgr"><label>Log<small>What session management did, newest last</small></label><button id="mgrLogBtn">Show log</button></div>
+  <div class="row mgr" id="mgrLogRow" style="display:none"><pre id="mgrLog"></pre></div>
+</section>
+
 <section data-card="theseus">
   <h2>Voice</h2>
   <div class="row" data-addon="voice"><label>Voice<small>Default EchoStatus voice (Kokoro)</small></label><select data-k="voice" id="voice"></select></div>
@@ -240,7 +271,7 @@
   <h2>Voice commands</h2>
   <div class="row"><label>Listen<small id="voiceNote">Offline, built-in Windows recognition</small></label>
     <select data-k="voiceCmd"><option value="off">Off</option><option value="ptt">Push-to-talk</option><option value="wake">Wake word</option><option value="always">Always on</option></select></div>
-  <div class="row"><label><small>Push-to-talk: hold Right Ctrl and speak. Wake word: say "<span class="nm">Theseus</span>", then the command. Commands: system status, mute mic, unmute mic, next output, next mic, start recording, stop recording, save replay, screenshot, mode &lt;name&gt;. Stop talking / be quiet / shush (cuts the voice). Sessions (with Ask on): show the tiles / tile view, fold the tiles, type &lt;text&gt; / send it / clear it (the open card), close the card, next tile, previous tile, scroll up / down, open in Claude, what is &lt;title&gt; doing, who needs me, how full is &lt;title&gt;, what is working, change voice, speak faster / slower, turn speech on / off, turn alerts on / off, undo that, open &lt;title&gt;, new session / new task, new session in &lt;project&gt; &lt;task&gt; (its conversation opens once started), tell &lt;title&gt; &lt;message&gt;, what did &lt;title&gt; say, stop &lt;title&gt;.</small></label></div>
+  <div class="row"><label><small>Push-to-talk: hold Right Ctrl and speak. Wake word: say "<span class="nm">Theseus</span>", then the command. Commands: system status, mute mic, unmute mic, next output, next mic, start recording, stop recording, save replay, screenshot, mode &lt;name&gt;. Stop talking / be quiet / shush (cuts the voice). Sessions (with Ask on): show the tiles / tile view, fold the tiles, type &lt;text&gt; / send it / clear it (the open card), close the card, next tile, previous tile, scroll up / down, open in Claude, what is &lt;title&gt; doing, who needs me, how full is &lt;title&gt;, what is working, change voice, speak faster / slower, turn speech on / off, turn alerts on / off, undo that, open &lt;title&gt;, new session / new task, new session in &lt;project&gt; &lt;task&gt; (its conversation opens once started), tell &lt;title&gt; &lt;message&gt;, what did &lt;title&gt; say, stop &lt;title&gt;. With Session management on: park / resume / swap / don't swap &lt;title&gt;, &lt;title&gt; next, cancel (a swap).</small></label></div>
   <div class="row"><label>Voice chat<small>After the wake word, Theseus keeps listening once it has replied: carry on without the wake word. "That's all" or silence ends it (Wake word and Always on)</small></label><input type="checkbox" data-k="voiceChat"></div>
   <div class="row"><label>Chat wait<small>How long it listens after each reply</small></label><input type="range" min="3" max="30" step="1" data-k="chatWait" data-num data-unit="s"><span class="val"></span></div>
   <h2 data-addon="whisper">Voice questions</h2>
@@ -311,6 +342,45 @@ for (const el of tfs) el.addEventListener('change', () => { const [k, g] = el.da
 const mss = [...document.querySelectorAll('[data-ms]')], mbs = [...document.querySelectorAll('[data-mb]')];
 for (const el of mbs) el.addEventListener('change', () => { const v = num(el); if (v != null) window.sphere.setSettings({ modeBright: { [el.dataset.mb]: v } }); });
 for (const el of mss) el.addEventListener('change', () => { const v = num(el); if (v != null) window.sphere.setSettings({ modeSpeed: { [el.dataset.ms]: v } }); });
+// session management (SessionManagement_Spec): caps, mode messages, the rules installer, the log
+const caps = [...document.querySelectorAll('[data-cap]')], mms = [...document.querySelectorAll('[data-mm]')];
+for (const el of caps) el.addEventListener('change', () => { const v = num(el); if (v != null) window.sphere.setSettings({ caps: { [el.dataset.cap]: v } }); });
+for (const el of mms) el.addEventListener('change', () => window.sphere.setSettings({ modeMsgs: { [el.dataset.mm]: el.value } }));
+const mAct = a => window.sphere.manage(a);
+const preRow = document.getElementById('rulesPreRow'), pre = document.getElementById('rulesPre'), rState = document.getElementById('rulesState');
+const RULES_ABOUT = "The checkpoint and commit rules the swaps rely on, added to Claude Code's CLAUDE.md and settings.json (backed up first)";
+async function rulesShow() {
+  const r = await mAct({ act: 'rules-status' });
+  rState.textContent = r && r.installed ? `Installed ${new Date(r.at).toLocaleString()} in ${r.dir}` : RULES_ABOUT;
+  document.getElementById('rulesOut').disabled = !(r && r.installed);
+}
+document.getElementById('rulesPrev').onclick = async () => {
+  if (preRow.style.display === '') { preRow.style.display = 'none'; return; }
+  const p = await mAct({ act: 'rules-plan' }), bar = '-'.repeat(40);
+  pre.textContent = p.err ? p.err : `${p.mdFile}\n${bar}\n${p.md}\n\n${p.jsFile}\n${bar}\n${p.js}`; preRow.style.display = '';
+};
+document.getElementById('rulesIn').onclick = async () => { const r = await mAct({ act: 'rules-install' }); rState.textContent = r.ok ? 'Installed.' : 'Not installed: ' + r.why; setTimeout(rulesShow, 1500); };
+document.getElementById('rulesOut').onclick = async () => { const r = await mAct({ act: 'rules-remove' }); rState.textContent = r.ok ? 'Removed.' : 'Not removed: ' + r.why; setTimeout(rulesShow, 1500); };
+const logRow = document.getElementById('mgrLogRow');
+document.getElementById('mgrLogBtn').onclick = async () => {
+  if (logRow.style.display === '') { logRow.style.display = 'none'; return; }
+  const l = await mAct({ act: 'log' }); document.getElementById('mgrLog').textContent = (l || []).join('\n') || 'Nothing yet.'; logRow.style.display = '';
+};
+document.getElementById('mgrOutsideOk').onclick = () => window.sphere.setSettings({ manageOutsideOk: true });
+let rulesShown = false;
+function mgrUi(s) {
+  const keep = new Set(['mgrWarn', 'rulesPreRow', 'mgrLogRow']);
+  for (const el of document.querySelectorAll('#manageSec .mgr')) if (!keep.has(el.id)) el.style.display = s.manageOn ? '' : 'none';
+  for (const el of caps) if (!editing(el)) el.value = (s.caps || {})[el.dataset.cap];
+  for (const el of mms) if (!editing(el)) el.value = (s.modeMsgs || {})[el.dataset.mm] || '';
+  const w = [], st = s.manageState || {};
+  if (s.manageOn && !s.appControl) w.push('App control is off (General settings): swaps and the queue only warn, nothing is typed or started.');
+  if (s.manageOn && st.outside && !s.manageOutsideOk) w.push('Another session manager is running (a Session Manager group). Swaps and the queue are held so the two do not fight.');
+  document.getElementById('mgrWarn').style.display = w.length ? '' : 'none';
+  document.getElementById('mgrWarnText').textContent = w.join(' ');
+  document.getElementById('mgrOutsideOk').style.display = s.manageOn && st.outside && !s.manageOutsideOk ? '' : 'none';
+  if (s.manageOn && !rulesShown) { rulesShown = true; rulesShow(); }
+}
 for (const el of document.querySelectorAll('input[type=number]')) el.addEventListener('blur', () => { if (lastS && num(el) == null) show(lastS); });
 // a bar card shows only its own sections (#general / #theseus); the plain settings window shows them all
 const CARD_TITLES = { general: 'General', theseus: 'Theseus', setup: 'Setup' }, NM = () => (lastS && lastS.name) || 'Theseus';
@@ -323,7 +393,7 @@ function showCard() {
 }
 showCard();
 function show(s) {
-  const nameNow = lastS && lastS.name; lastS = s; tileUi(s); bgUi(s);
+  const nameNow = lastS && lastS.name; lastS = s; tileUi(s); bgUi(s); mgrUi(s);
   if (s.name !== nameNow) { for (const e of document.querySelectorAll('.nm')) e.textContent = NM(); document.title = NM() + ' settings'; showCard(); }
   for (const c of cvs) c.checked = (s.voiceCycleList || []).includes(c.value);
   document.getElementById('cycleRow').style.display = document.getElementById('cycleTestRow').style.display = s.voiceCycle ? '' : 'none';

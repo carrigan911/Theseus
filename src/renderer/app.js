@@ -166,6 +166,7 @@ function setHover(m) {
 }
 // right-click on a session tile: its settings chip bar (SessionConsole_Stage4 Q1); anywhere else closes it
 const chipBar = createChips();
+let manageOn = false;   // session management is on (settings)
 // the chip bar, and any open drop menu (a console's mode or ⋯ menu can reach past the card): the window takes the pointer there
 function overChips(x, y) {
   return [...(chipBar.on ? [document.getElementById('chips')] : []), ...document.querySelectorAll('.cmenu')].some(n => { const r = n.getBoundingClientRect(); return x >= r.left - 6 && x <= r.right + 6 && y >= r.top - 6 && y <= r.bottom + 6; });
@@ -176,7 +177,7 @@ addEventListener('contextmenu', e => {
   e.preventDefault();
   if (within(e, '#bar, #top, #sres, #rlist, #con, #chips, .cmenu')) return;
   const m = spreadOn && spread > 0.9 ? tileAt(e.clientX, e.clientY) : null, s = m && m.userData.session;
-  if (s && s.link && !s.newTile && !s.press && !overlayOn) chipBar.open(s, e.clientX, e.clientY); else chipBar.close();
+  if (s && (s.link || (s.reader && manageOn)) && !s.newTile && !s.press && !overlayOn) chipBar.open(s, e.clientX, e.clientY); else chipBar.close();
 });
 addEventListener('click', e => {
   if (chipBar.on) { if (!chipBar.contains(e.target)) chipBar.close(); return; }   // a click outside only closes the bar
@@ -711,6 +712,7 @@ function applySettings(s) {
   con.setAppControl(s.appControl);
   const md = document.getElementById('mode'); if (md) md.style.display = s.live && s.live.modes && !s.live.modes.on ? 'none' : '';   // the Modes add-on
   FRAME_MS = s.fps > 0 ? 1000 / s.fps : 0;
+  manageOn = !!s.manageOn; chipBar.setManage(manageOn);   // session management: the Queue chip on a tile's right-click bar
   panelMat.uniforms.uFill.value = s.bgInTiles && s.bgStyle && s.bgStyle !== 'none' ? 0.3 : 1;   // "Also in tile view": a see-through panel over the background
   const rs0 = renderScale; renderScale = s.renderScale > 0 ? s.renderScale : 1;
   if (!renderer || aaOn !== renderScale < 1.5) makeRenderer(renderScale < 1.5); else if (renderScale !== rs0) resize();   // a slider echo never resets the canvas

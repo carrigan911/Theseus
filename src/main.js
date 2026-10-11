@@ -38,6 +38,12 @@ const defaults = {
   // Theseus tools: audio cycles (device ids), strip, system readout, voice commands, recording
   outCycle: [], micCycle: [], strip: true, stripPos: null, sysReadout: false, sysAlerts: false, sysSpeak: false, voiceCmd: 'off', hotkeys: true,
   bgStyle: 'none', bgOpacity: 85, bgInTiles: false,          // background (Backgrounds_Spec): style, opacity %, also behind the spread rows
+  // session management (SessionManagement_Spec): off by default; swaps at the line, modes + schedule, parking + queue
+  manageOn: false, manageSwaps: true, manageModes: true, manageQueue: true, manageOutsideOk: false, swapTokens: 200000, swapAgeMin: 120,
+  nightOn: true, nightFrom: '23:00', nightTo: '06:30', weekendOn: true, weekendFrom: '18:00', weekendTo: '06:30', queueAtNight: false, compactWindow: 300000,
+  caps: { normal: 4, worker: 6, night: 1, weekend: 2, performance: 8, efficiency: 2 },
+  modeMsgs: { normal: '', worker: '', night: 'Night mode: finish the current step, commit, update your checkpoint, then stop.',
+    weekend: 'Weekend mode: finish the current step, commit, update your checkpoint, then stop.', performance: '', efficiency: '' },
   // paths (PublicVersion_Spec): empty = not set up (an add-on stays off; recordings go to Videos, ffmpeg is looked up on PATH)
   addons: { modes: true, readout: true, feed: true, voice: true, whisper: true },   // add-on switches (each also needs its file)
   readerDays: 7,                                             // the built-in session reader: sessions changed within this many days
@@ -65,6 +71,7 @@ const PATH = v => typeof v === 'string' && /^([a-z]:[\\/]|\\\\)/i.test(v) && v.l
 const PATHE = v => v === '' ? '' : PATH(v);   // a path setting that may be empty (not set up)
 const POS = v => v === null ? null : v && typeof v === 'object' && [v.x, v.y].every(n => typeof n === 'number' && isFinite(n)) ? { x: Math.round(Math.min(1e5, Math.max(-1e5, v.x))), y: Math.round(Math.min(1e5, Math.max(-1e5, v.y))) } : undefined;
 const REGION = v => v === null ? null : v && typeof v === 'object' && ['x', 'y', 'w', 'h'].every(k => typeof v[k] === 'number' && isFinite(v[k]) && Math.abs(v[k]) < 1e5) && v.w >= 32 && v.h >= 32 ? { x: Math.round(v.x), y: Math.round(v.y), w: Math.round(v.w), h: Math.round(v.h) } : undefined;
+const TIME = v => typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v) ? v : undefined;
 const VOICE = v => typeof v === 'string' && /^[a-z]{2}_[a-z0-9_]{1,30}$/i.test(v) ? v : undefined;
 const RULES = {
   side: en('left', 'right', 'full'), display: v => typeof v === 'string' && v.length <= 40 ? v : typeof v === 'number' && isFinite(v) ? String(v) : undefined,
@@ -74,13 +81,16 @@ const RULES = {
   voiceCycleMgr: v => typeof v === 'string' && v.length <= 100 ? v : undefined, autostart: bl,
   sphereSize: en('small', 'medium', 'large', 'xlarge'), sphereGrowth: bl, emptySpots: en('tiles', 'open'), rowTileSize: en('large', 'medium', 'small'), tileAlign: en('left', 'center', 'right'), flatShape: en('regular', 'hexagon'), coreFollowsMode: bl, modeMotion: bl, spikeStrength: nm(0, 2),
   bgStyle: en('none', 'black', 'space', 'moving', 'gradient', 'travel'), bgOpacity: nm(0, 100), bgInTiles: bl,
+  manageOn: bl, manageSwaps: bl, manageModes: bl, manageQueue: bl, manageOutsideOk: bl, swapTokens: nm(50000, 1000000), swapAgeMin: nm(0, 1440),
+  nightOn: bl, nightFrom: TIME, nightTo: TIME, weekendOn: bl, weekendFrom: TIME, weekendTo: TIME, queueAtNight: bl, compactWindow: nm(0, 1000000),
   outCycle: IDS, micCycle: IDS, strip: bl, stripPos: POS, sysReadout: bl, sysAlerts: bl, sysSpeak: bl, voiceCmd: en('off', 'ptt', 'wake', 'always'), hotkeys: bl,
   readerDays: nm(1, 60), recDir: PATHE, feedFile: PATHE, modeDir: PATHE, statusFile: PATHE, echoDir: PATHE, whisperPy: PATHE, ffmpeg: PATHE, transcriptsRoot: PATHE,
   name: v => typeof v === 'string' && /^\p{L}[\p{L}' -]{0,30}$/u.test(v.trim()) ? v.trim() : undefined, recPrefix: v => typeof v === 'string' && /^[\w-]{0,30}$/.test(v) ? v : undefined,
   appControl: bl, appNoticeSeen: bl, setupDone: bl, pathsVersion: nm(0, 99), editor: en('system', 'vscode', 'custom'), editorCmd: v => typeof v === 'string' && v.length <= 400 ? v : undefined,
   replay: bl, replaySec: v => { v = nm(10, 600)(v); return v === undefined ? v : Math.round(v); }, recSource: en('screen', 'region', 'window'), recRegion: REGION, recMic: bl, recSystem: bl,
 };
-const NESTED = { modeColors: col, modeSpeed: nm(0, 10), modeBright: nm(0, 5), tilesSphere: bl, tilesRows: bl, addons: bl };
+const NESTED = { modeColors: col, modeSpeed: nm(0, 10), modeBright: nm(0, 5), tilesSphere: bl, tilesRows: bl, addons: bl,
+  caps: v => { v = nm(0, 20)(v); return v === undefined ? v : Math.round(v); }, modeMsgs: v => typeof v === 'string' && v.length <= 400 ? v : undefined };
 function clean(p) {
   const o = {};
   if (!p || typeof p !== 'object') return o;
@@ -96,7 +106,7 @@ function clean(p) {
   return o;
 }
 const merge = (base, p) => ({ ...base, ...p, modeColors: { ...base.modeColors, ...p.modeColors }, modeSpeed: { ...base.modeSpeed, ...p.modeSpeed }, modeBright: { ...base.modeBright, ...p.modeBright },
-  tilesSphere: { ...base.tilesSphere, ...p.tilesSphere }, tilesRows: { ...base.tilesRows, ...p.tilesRows }, addons: { ...base.addons, ...p.addons } });
+  tilesSphere: { ...base.tilesSphere, ...p.tilesSphere }, tilesRows: { ...base.tilesRows, ...p.tilesRows }, addons: { ...base.addons, ...p.addons }, caps: { ...base.caps, ...p.caps }, modeMsgs: { ...base.modeMsgs, ...p.modeMsgs } });
 function loadSettings() {
   P.set(() => settings);
   settings = null;
@@ -221,7 +231,11 @@ function flushSettings() { clearTimeout(saveT); saveT = null; try { writeAtomic(
 // what the pages get: the settings plus the add-ons' live state (live: { k: { on, found } })
 // a personal copy (personal.settings.json beside the app) shows its add-ons in settings; the public install does not
 const PERSONAL = !process.env.SPHERE_NO_PERSONAL && fs.existsSync(path.join(__dirname, '..', 'personal.settings.json'));
-const uiSettings = () => ({ ...settings, live: P.addons(), personal: PERSONAL });
+let mgr = null, rulesI = null;   // session management (manage.js) and the working-rules installer (rules.js), made at start
+const uiSettings = () => {
+  const live = P.addons(); if (settings.manageOn && settings.manageModes) live.modes = { on: true, found: true };   // managed mode: the picker shows
+  return { ...settings, live, personal: PERSONAL, manageState: mgr ? mgr.state() : null };
+};
 const ADDON_KEYS = ['addons', 'feedFile', 'modeDir', 'statusFile', 'echoDir', 'whisperPy'];
 function pushSettings() { const s = uiSettings(); for (const w of [settingsWin, stripWin, win]) if (w && !w.isDestroyed()) w.webContents.send('settings', s); }
 // IPC calls count only from our own windows
@@ -416,6 +430,7 @@ if (gotLock) app.whenReady().then(() => {
   const readMode = f => { if (!P.modeDir()) return null; try { const j = JSON.parse(fs.readFileSync(path.join(P.modeDir(), f), 'utf8').replace(/^\uFEFF/, '')); return (j.weekend ? 'weekend' : j.mode) || null; } catch { return null; } };
   // SPHERE_MODE_FILE (tests): a scratch {"mode": ...} file stands in for the real mode, so the core can be checked per mode
   function getMode() {
+    if (mgr && settings.manageOn && settings.manageModes) return { mode: mgr.mode(), pending: null };   // Theseus keeps the mode itself
     return process.env.SPHERE_MODE_FILE
       ? { mode: (() => { try { return JSON.parse(fs.readFileSync(process.env.SPHERE_MODE_FILE, 'utf8')).mode; } catch { return 'normal'; } })(), pending: null }
       : { mode: readMode('editor_limits.json'), pending: readMode('mode_request.json') };
@@ -423,6 +438,7 @@ if (gotLock) app.whenReady().then(() => {
   ipcMain.handle('mode', e => fromUi(e) ? getMode() : null);
   ipcMain.handle('set-mode', (e, m) => fromUi(e) ? requestMode(m) : null);
   function requestMode(m) {
+    if (mgr && settings.manageOn && settings.manageModes) { if (MODES.includes(m)) mgr.setMode(m); return getMode(); }
     // a test instance (own user folder or scratch mode file) never asks Theseus for a real mode change
     if (process.env.SPHERE_MODE_FILE || process.env.SPHERE_USERDATA) {
       if (MODES.includes(m) && process.env.SPHERE_MODE_FILE) try { fs.writeFileSync(process.env.SPHERE_MODE_FILE, JSON.stringify({ mode: m })); } catch {}
@@ -1790,6 +1806,8 @@ if (gotLock) app.whenReady().then(() => {
   const vCap = (q, t) => toWin('ask', { state: 'answer', q, text: t, spoken: settings.askSpeak });
   const vSay = t => { if (settings.askSpeak) say(t); };
   function voicePending(n) {
+    // a managed swap's 30 s window (SessionManagement_Spec): "cancel" stops it
+    if (!vPend && mgr && mgr.canceling() && /^(cancel|stop|no|don t|do not|never mind)\b/.test(n)) { mgr.cancel(); vSay('Cancelled.'); log('console voice: swap cancelled'); return true; }
     if (!vPend) return false;
     const p = vPend;
     if (/^(cancel|no|nope|don t|do not|stop|never mind)\b/.test(n)) { clearTimeout(p.timer); vPend = null; vCap(n, 'Cancelled.'); vSay('Cancelled.'); log('console voice: cancelled'); return true; }
@@ -2135,6 +2153,18 @@ if (gotLock) app.whenReady().then(() => {
     if (op === 'type') vCap(text, `Typed: ${arg}`);
     return true;
   }
+  // session management by voice: "park / resume / swap / don't swap <title>", "<title> next" (first in the queue)
+  function voiceManage(text, n) {
+    let m = n.match(/^(park|resume|unpark|swap|don t swap|do not swap|skip the swap for|skip swap for) (.+)$/), act = null, f = null;
+    if (m) { act = { park: 'park', resume: 'resume', unpark: 'resume', swap: 'swap' }[m[1]] || 'noswap'; f = findSession(m[2].split(' '), true); }
+    else if ((m = n.match(/^(.+?) (?:next|first)$/))) { act = 'first'; f = findSession(m[1].split(' '), true); }
+    if (!act || !f) return false;
+    const id = f.s.sessionId, t = f.s.title;
+    const done = { park: `${t} parked.`, resume: `${t} resumed.`, swap: `Swapping ${t}.`, noswap: `${t} will not be swapped until its next line.`, first: `${t} is next in the queue.` }[act];
+    Promise.resolve(act === 'park' ? mgr.park(id) : act === 'resume' ? mgr.resume(id) : act === 'swap' ? mgr.swapNow(id) : act === 'noswap' ? mgr.noSwap(id) : mgr.order(id, 'first'))
+      .then(r => { vCap(text, r.ok ? done : `${t}: ${r.why}`); vSay(r.ok ? done : 'That did not work.'); log(`console voice: manage ${act} "${t}": ${r.ok ? 'ok' : r.why}`); feedOut(); });
+    return true;
+  }
   async function voiceSession(text, n) {
     // Whisper writes what it heard: "Okay, can you open …", "Opened a test session", "Starting a new session in …", "… please"
     // (the same lead-in comes off the spoken text too, so its words line up with n's: "tell" counts words of both)
@@ -2153,6 +2183,7 @@ if (gotLock) app.whenReady().then(() => {
     if (w[0] === 'answer' && w.length >= 2 && voiceAnswer(text, w)) return true;
     if (/^(always allow|allow|deny|approve|accept|reject) /.test(n) && voiceWait(text, n)) return true;
     if (voiceTiles(text, n)) return true;
+    if (settings.manageOn && voiceManage(text, n)) return true;
     if (voiceNew(text, n)) return true;
     if (voiceOpen(text, n)) return true;
     if ((m = n.match(/^what (did|has|does) (.+?) (say|said|says|replied|reply)$/))) {
@@ -2572,7 +2603,36 @@ if (gotLock) app.whenReady().then(() => {
     setTimeout(shot, 6000);
   }
 
-  feed.watch(f => { lastFeed = f; attnTidy(); cycleVoice(f); feedOut(); });
+  // session management (SessionManagement_Spec): groups / swap line applied to each feed, the engine ticks on it
+  mgr = require('./manage').create({
+    settings: () => settings, dir: app.getPath('userData'), log,
+    send: (id, text) => sessionSend(id, text), manage: (id, act, name) => sessionManage(id, act, name), newSession: (folder, model, text) => sessionNew(folder, model, text),
+    transcriptOf, bornOf: id => { const f = transcriptOf(id); return f ? born(f) : -1; },
+    awaiting: id => awaiting.get(id) === true || attn.has(String(id)), blocked: () => !!(overlay || opening),
+    cap: text => vCap('', text), say: text => { if (settings.askSpeak) say(text); }, modeChanged: () => {},
+    changed: () => { if (settings.manageOn) { lastFeed = mgr.apply(lastFeed); feedOut(); } },
+  });
+  rulesI = require('./rules').create({ claudeDir: P.claudeDir, dir: app.getPath('userData'), log });
+  ipcMain.handle('manage-act', async (e, a) => {
+    if (!(fromWin(e) || fromSettings(e)) || !a || typeof a !== 'object') return { ok: false, why: 'bad call' };
+    const id = typeof a.id === 'string' && SID.test(a.id) ? a.id : null;
+    switch (a.act) {
+      case 'park': return id ? mgr.park(id) : { ok: false, why: 'bad session' };
+      case 'resume': return id ? mgr.resume(id) : { ok: false, why: 'bad session' };
+      case 'first': case 'last': return id ? mgr.order(id, a.act) : { ok: false, why: 'bad session' };
+      case 'swap': return id ? mgr.swapNow(id) : { ok: false, why: 'bad session' };
+      case 'noswap': return id ? mgr.noSwap(id) : { ok: false, why: 'bad session' };
+      case 'cancel': return { ok: mgr.cancel() };
+      case 'state': return mgr.state();
+      case 'log': return mgr.logLines(200);
+      case 'rules-status': return rulesI.status();
+      case 'rules-plan': { const p = rulesI.plan(settings.compactWindow); return p.err ? { err: p.err } : { md: p.md.after, js: p.js.after, mdFile: p.md.file, jsFile: p.js.file }; }
+      case 'rules-install': return fromSettings(e) ? rulesI.install(settings.compactWindow) : { ok: false, why: 'from the settings card only' };
+      case 'rules-remove': return fromSettings(e) ? rulesI.remove() : { ok: false, why: 'from the settings card only' };
+    }
+    return { ok: false, why: 'unknown action' };
+  });
+  feed.watch(f => { lastFeed = mgr.apply(f); attnTidy(); cycleVoice(f); feedOut(); mgr.tick(); });
   // the renderer may still be loading when the first state comes (a line already playing at start): it gets the last one once loaded
   let lastTalk = null;
   voice.watch(on => { lastTalk = on; if (win && !win.isDestroyed() && !win.webContents.isLoading()) win.webContents.send('talking', on); });

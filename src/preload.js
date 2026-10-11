@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('sphere', {
   settings: () => ipcRenderer.invoke('settings'),
   onSettings: cb => ipcRenderer.on('settings', (_e, s) => cb(s)),
   setSettings: patch => ipcRenderer.invoke('set-settings', patch),
+  manage: a => ipcRenderer.invoke('manage-act', a),
   testVoice: () => ipcRenderer.send('test-voice'),
   testCycle: () => ipcRenderer.invoke('test-cycle'),
   openSettings: (section, rect) => ipcRenderer.send('open-settings', section, rect),
