@@ -36,16 +36,16 @@ const sphere = createSphere(scene);
 const PANEL_Z = -2;
 const panelMat = new THREE.ShaderMaterial({
   transparent: true, depthWrite: false,
-  uniforms: { uSize: { value: new THREE.Vector2(1, 1) }, uR: { value: 0.1 }, uOpacity: { value: 0 } },
+  uniforms: { uSize: { value: new THREE.Vector2(1, 1) }, uR: { value: 0.1 }, uOpacity: { value: 0 }, uFill: { value: 1 } },
   vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-  fragmentShader: `uniform vec2 uSize; uniform float uR, uOpacity; varying vec2 vUv;
+  fragmentShader: `uniform vec2 uSize; uniform float uR, uOpacity, uFill; varying vec2 vUv;
   void main() {
     vec2 p = (vUv - 0.5) * uSize, q = abs(p) - uSize * 0.5 + uR;
     float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - uR;           // rounded-rect distance (world units)
     float aa = fwidth(d), inside = 1.0 - smoothstep(-aa, aa, d);
     float border = 1.0 - smoothstep(0.0, aa * 1.5, abs(d + 0.012));
     vec3 col = mix(vec3(0.071, 0.071, 0.067), vec3(0.17, 0.165, 0.155), border);  // darker Claude grey #121211, border #2b2a28
-    gl_FragColor = vec4(col, inside * uOpacity);
+    gl_FragColor = vec4(col, inside * uOpacity * mix(uFill, 1.0, border));   // uFill < 1: the background shows through
   }`,
 });
 const panel = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), panelMat);
@@ -711,6 +711,7 @@ function applySettings(s) {
   con.setAppControl(s.appControl);
   const md = document.getElementById('mode'); if (md) md.style.display = s.live && s.live.modes && !s.live.modes.on ? 'none' : '';   // the Modes add-on
   FRAME_MS = s.fps > 0 ? 1000 / s.fps : 0;
+  panelMat.uniforms.uFill.value = s.bgInTiles && s.bgStyle && s.bgStyle !== 'none' ? 0.3 : 1;   // "Also in tile view": a see-through panel over the background
   const rs0 = renderScale; renderScale = s.renderScale > 0 ? s.renderScale : 1;
   if (!renderer || aaOn !== renderScale < 1.5) makeRenderer(renderScale < 1.5); else if (renderScale !== rs0) resize();   // a slider echo never resets the canvas
   wake();

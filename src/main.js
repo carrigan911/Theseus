@@ -37,7 +37,7 @@ const defaults = {
   tilesRows: { mgr: true, active: true, parked: true, ungrouped: true, archived: false },
   // Theseus tools: audio cycles (device ids), strip, system readout, voice commands, recording
   outCycle: [], micCycle: [], strip: true, stripPos: null, sysReadout: false, sysAlerts: false, sysSpeak: false, voiceCmd: 'off', hotkeys: true,
-  bgStyle: 'none', bgOpacity: 85, bgAlways: false,           // background (Backgrounds_Spec): style, opacity %, live wallpaper
+  bgStyle: 'none', bgOpacity: 85, bgInTiles: false,          // background (Backgrounds_Spec): style, opacity %, also behind the spread rows
   // paths (PublicVersion_Spec): empty = not set up (an add-on stays off; recordings go to Videos, ffmpeg is looked up on PATH)
   addons: { modes: true, readout: true, feed: true, voice: true, whisper: true },   // add-on switches (each also needs its file)
   readerDays: 7,                                             // the built-in session reader: sessions changed within this many days
@@ -73,7 +73,7 @@ const RULES = {
   voice: VOICE, voiceSpeed: nm(0.5, 2), voiceCycle: bl, voiceCycleList: v => Array.isArray(v) ? v.filter(x => VOICE(x)).slice(0, 80) : undefined,
   voiceCycleMgr: v => typeof v === 'string' && v.length <= 100 ? v : undefined, autostart: bl,
   sphereSize: en('small', 'medium', 'large', 'xlarge'), sphereGrowth: bl, emptySpots: en('tiles', 'open'), rowTileSize: en('large', 'medium', 'small'), tileAlign: en('left', 'center', 'right'), flatShape: en('regular', 'hexagon'), coreFollowsMode: bl, modeMotion: bl, spikeStrength: nm(0, 2),
-  bgStyle: en('none', 'black', 'space', 'moving', 'gradient', 'travel'), bgOpacity: nm(0, 100), bgAlways: bl,
+  bgStyle: en('none', 'black', 'space', 'moving', 'gradient', 'travel'), bgOpacity: nm(0, 100), bgInTiles: bl,
   outCycle: IDS, micCycle: IDS, strip: bl, stripPos: POS, sysReadout: bl, sysAlerts: bl, sysSpeak: bl, voiceCmd: en('off', 'ptt', 'wake', 'always'), hotkeys: bl,
   readerDays: nm(1, 60), recDir: PATHE, feedFile: PATHE, modeDir: PATHE, statusFile: PATHE, echoDir: PATHE, whisperPy: PATHE, ffmpeg: PATHE, transcriptsRoot: PATHE,
   name: v => typeof v === 'string' && /^\p{L}[\p{L}' -]{0,30}$/u.test(v.trim()) ? v.trim() : undefined, recPrefix: v => typeof v === 'string' && /^[\w-]{0,30}$/.test(v) ? v : undefined,
@@ -258,12 +258,13 @@ function sendToBottom(retries = 2) {
 }
 const hwndOf = w => Number(w.getNativeWindowHandle().readBigUInt64LE(0));
 
-// ---- background (Backgrounds_Spec): a click-through window over the sphere's screen. Spread: just behind the sphere, over
-// other windows. Folded with Always visible: a live wallpaper at the bottom of the stack, just under the folded sphere ----
+// ---- background (Backgrounds_Spec, change 10-11): a click-through window. Folded: a live wallpaper over the sphere's screen
+// at the bottom of the stack, just under the sphere. Spread (rows / a card): hidden, or with "Also in tile view" just behind
+// the sphere over its own half only (never over other windows) ----
 let bgWin = null, bgReady = false, bgHideT = 0, bgPaused = false;
 const bgExtra = { tint: '#3da5ff', working: false };   // the mode colour and "a session is working" (set where they are known)
-const bgOn = () => settings.bgStyle !== 'none' && alive(win) && win.isVisible() && (settings.bgAlways || frontOn);   // the sphere hidden (tray): no background
-const bgBounds = () => screen.getDisplayMatching(win.getBounds()).bounds;
+const bgOn = () => settings.bgStyle !== 'none' && alive(win) && win.isVisible() && (!frontOn || settings.bgInTiles);   // the sphere hidden (tray): no background
+const bgBounds = () => frontOn ? win.getBounds() : screen.getDisplayMatching(win.getBounds()).bounds;
 const differs = (a, b) => a.x !== b.x || a.y !== b.y || a.width !== b.width || a.height !== b.height;
 function bgSend() {
   if (!alive(bgWin)) return;
@@ -380,7 +381,7 @@ if (gotLock) app.whenReady().then(() => {
     }, 500);
   };
   for (const ev of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(ev, onDisplays);
-  if (process.env.SPHERE_OPEN_SETTINGS) openSettings();
+  if (process.env.SPHERE_OPEN_SETTINGS) openSettings(process.env.SPHERE_OPEN_SETTINGS === '1' ? '' : process.env.SPHERE_OPEN_SETTINGS);   // tests: =1, or a section (theseus, general)
   // test pictures of the settings window: SETTINGS_SHOT="<png>;<css selector to scroll to>" (taken <ms> after start, 7000 by default)
   if (process.env.SETTINGS_SHOT) { const [png, sel, ms] = process.env.SETTINGS_SHOT.split(";"); setTimeout(() => { if (!alive(settingsWin)) return; settingsWin.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(sel || "body")})?.scrollIntoView()`).catch(() => {}); setTimeout(() => alive(settingsWin) && settingsWin.webContents.capturePage().then(i => fs.writeFileSync(png, i.toPNG())), 3000); }, +ms || 7000); }
   // Renderer tells us whether the pointer is over the sphere: only then the window takes mouse input.
@@ -411,7 +412,8 @@ if (gotLock) app.whenReady().then(() => {
   });
   // Theseus mode: current = editor_limits.json .mode; a change is a request the Session manager's watcher picks up
   const MODES = ['normal', 'worker', 'night', 'weekend', 'performance', 'efficiency'];
-  const readMode = f => { if (!P.modeDir()) return null; try { return JSON.parse(fs.readFileSync(path.join(P.modeDir(), f), 'utf8').replace(/^\uFEFF/, '')).mode || null; } catch { return null; } };
+  // weekend is written as { mode: 'night', weekend: true } (the Session manager's weekend-mode skill; ModeButtons reads it the same way)
+  const readMode = f => { if (!P.modeDir()) return null; try { const j = JSON.parse(fs.readFileSync(path.join(P.modeDir(), f), 'utf8').replace(/^\uFEFF/, '')); return (j.weekend ? 'weekend' : j.mode) || null; } catch { return null; } };
   // SPHERE_MODE_FILE (tests): a scratch {"mode": ...} file stands in for the real mode, so the core can be checked per mode
   function getMode() {
     return process.env.SPHERE_MODE_FILE
@@ -442,7 +444,7 @@ if (gotLock) app.whenReady().then(() => {
     const moved = 'side' in patch || 'display' in patch;
     settings = merge(settings, patch); saveSettings();
     if (moved && win && !win.isDestroyed()) win.setBounds(halfBounds());
-    if (moved || 'bgStyle' in patch || 'bgOpacity' in patch || 'bgAlways' in patch) syncBg();
+    if (moved || 'bgStyle' in patch || 'bgOpacity' in patch || 'bgInTiles' in patch) syncBg();
     if ('voice' in patch || 'voiceSpeed' in patch) writeVoice();
     if ('autostart' in patch) setAutostart();
     if (patch.claudeTray === true) hideClaude();

@@ -31,6 +31,10 @@
   .tf { flex: 1; display: flex; flex-wrap: wrap; gap: 4px 18px; }
   .row .tf label { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-size: 13px; }
   button:disabled { opacity: .4; cursor: default; }
+  #bgThumbs { display: flex; gap: 6px; width: 100%; }
+  #bgThumbs button { flex: 1 1 0; min-width: 0; background: #262624; border: 1px solid var(--line); border-radius: 7px; padding: 3px 2px 4px; color: var(--dim); font-size: 11px; line-height: 1.2; }
+  #bgThumbs button.on { border-color: var(--accent); color: var(--text); }
+  #bgThumbs canvas { display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: 4px; margin-bottom: 2px; }
   #wearThumbs, #swapThumbs { display: flex; gap: 6px; width: 100%; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
   #wearThumbs button, #swapThumbs button { flex: 0 0 calc((100% - 30px) / 6); background: #262624; border: 1px solid var(--line); border-radius: 7px; padding: 3px 2px 4px; color: var(--dim); font-size: 11px; line-height: 1.2; min-width: 0; }
   #wearThumbs::-webkit-scrollbar, #swapThumbs::-webkit-scrollbar { height: 6px; } #wearThumbs::-webkit-scrollbar-track, #swapThumbs::-webkit-scrollbar-track { background: transparent; } #wearThumbs::-webkit-scrollbar-thumb, #swapThumbs::-webkit-scrollbar-thumb { background: #3a3a37; border-radius: 3px; }
@@ -76,13 +80,6 @@
   <div class="row"><label>Rotation<small>Minutes per turn of the sphere (0 = still)</small></label><input type="number" min="0" max="30" step="0.5" data-k="spinMinutes" data-num></div>
 </section>
 
-<section data-card="general">
-  <h2>Background</h2>
-  <div class="row"><label>Style<small>What shows behind the sphere: while the rows are spread out, or all the time with Always visible</small></label>
-    <select data-k="bgStyle"><option value="none">None</option><option value="black">Black</option><option value="space">Space</option><option value="moving">Moving space</option><option value="gradient">Flowing gradient</option><option value="travel">Space travel</option></select></div>
-  <div class="row"><label>Opacity<small>How much of the desktop shows through (100 = none)</small></label><input type="range" min="0" max="100" step="5" data-k="bgOpacity" data-num><span class="val"></span></div>
-  <div class="row"><label>Always visible<small>A live wallpaper: the background stays behind all your windows, covering the desktop (icons included); clicks still reach the desktop</small></label><input type="checkbox" data-k="bgAlways"></div>
-</section>
 
 <section data-card="general">
   <h2>Behaviour</h2>
@@ -211,6 +208,13 @@
   <div class="row"><div class="tf"><label><input type="checkbox" data-tf="tilesRows:mgr">Session manager</label><label><input type="checkbox" data-tf="tilesRows:active">Active</label><label><input type="checkbox" data-tf="tilesRows:parked">Parked</label><label><input type="checkbox" data-tf="tilesRows:ungrouped">Ungrouped</label><label><input type="checkbox" data-tf="tilesRows:archived">Archived</label></div></div>
 </section>
 
+<section data-card="theseus">
+  <h2>Background</h2>
+  <div class="row"><label>Style<small>Behind the folded sphere, like a wallpaper under your windows. Pick one; the moving ones move in their pictures</small></label></div>
+  <div class="row" id="bgThumbsRow"><div id="bgThumbs"></div></div>
+  <div class="row"><label>Opacity<small>How much of the desktop shows through (100 = none)</small></label><input type="range" min="0" max="100" step="5" data-k="bgOpacity" data-num><span class="val"></span></div>
+  <div class="row"><label>Also in tile view<small>It also shows behind the spread rows, on the sphere's half only</small></label><input type="checkbox" data-k="bgInTiles"></div>
+</section>
 <section data-card="theseus" data-addon="modes">
   <h2>Modes</h2>
   <div class="row" data-addon="modes"><label>Mode moves the core<small>Speed and brightness per mode (x normal)</small></label><input type="checkbox" data-k="modeMotion"></div>
@@ -257,6 +261,7 @@
     <input type="password" id="askTok" placeholder="token" style="min-width:110px;width:110px"> <button id="askSave">Save</button> <button id="askTest">Test</button></div>
 </section>
 
+<script src="bgshader.js"></script>
 <script>
 const VOICES = { 'British male': ['bm_lewis', 'bm_george', 'bm_daniel', 'bm_fable'], 'British female': ['bf_emma', 'bf_isabella', 'bf_alice', 'bf_lily'],
   'American male': ['am_michael', 'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam', 'am_onyx', 'am_puck'],
@@ -318,7 +323,7 @@ function showCard() {
 }
 showCard();
 function show(s) {
-  const nameNow = lastS && lastS.name; lastS = s; tileUi(s);
+  const nameNow = lastS && lastS.name; lastS = s; tileUi(s); bgUi(s);
   if (s.name !== nameNow) { for (const e of document.querySelectorAll('.nm')) e.textContent = NM(); document.title = NM() + ' settings'; showCard(); }
   for (const c of cvs) c.checked = (s.voiceCycleList || []).includes(c.value);
   document.getElementById('cycleRow').style.display = document.getElementById('cycleTestRow').style.display = s.voiceCycle ? '' : 'none';
@@ -410,6 +415,38 @@ window.sphere.displays().then(ds => {
   return window.sphere.settings();
 }).then(show);
 window.sphere.onSettings(show);
+// Background pictures (Backgrounds_Spec, change 10-11): one small WebGL canvas draws each style with the background's own
+// shader and is copied into the buttons; the moving styles run at about 15 fps while the row is on screen
+const BGS = [['none', 'None'], ['black', 'Black'], ['space', 'Space'], ['moving', 'Moving space'], ['gradient', 'Flowing gradient'], ['travel', 'Space travel']];
+const bgBox = document.getElementById('bgThumbs'), bgGl = document.createElement('canvas'); bgGl.width = 192; bgGl.height = 108;
+let bgShader = null, bgTint = '', bgSeen = false, bgRaf = 0, bgLast = 0, bgT0 = performance.now();
+for (const [k, name] of BGS) {
+  const b = document.createElement('button'), c = document.createElement('canvas'); b.type = 'button'; b.dataset.bg = k; b.title = name;
+  c.width = bgGl.width; c.height = bgGl.height; b.append(c, name); b.onclick = () => window.sphere.setSettings({ bgStyle: k }); bgBox.appendChild(b);
+}
+function bgPaint(still) {
+  try { bgShader ||= makeBgShader(bgGl); } catch (e) { console.error('background pictures', e); return; }
+  const t = (performance.now() - bgT0) / 1000;
+  for (const b of bgBox.children) {
+    const k = b.dataset.bg, x = b.firstChild.getContext('2d');
+    if (k === 'none') { if (still) { x.fillStyle = '#1b1b1a'; x.fillRect(0, 0, 192, 108); x.strokeStyle = '#3d3c38'; x.lineWidth = 2; for (let i = -108; i < 192; i += 18) { x.beginPath(); x.moveTo(i, 108); x.lineTo(i + 108, 0); x.stroke(); } } continue; }
+    if (!still && !BG_MOVING.has(k)) continue;
+    bgShader.draw(k, t, bgTint || '#3da5ff', 1, 1); x.clearRect(0, 0, 192, 108); x.drawImage(bgGl, 0, 0);
+  }
+}
+function bgTick(now) {
+  bgRaf = 0;
+  if (!bgSeen || document.hidden || bgBox.offsetParent === null) return;
+  if (now - bgLast >= 66) { bgLast = now; bgPaint(false); }
+  bgRaf = requestAnimationFrame(bgTick);
+}
+const bgKick = () => { if (!bgRaf && bgSeen) bgRaf = requestAnimationFrame(bgTick); };
+new IntersectionObserver(es => { bgSeen = es.some(e => e.isIntersecting); if (bgSeen) { bgPaint(true); bgKick(); } }).observe(bgBox);
+document.addEventListener('visibilitychange', bgKick);
+function bgUi(s) {
+  for (const b of bgBox.children) b.classList.toggle('on', b.dataset.bg === (s.bgStyle || 'none'));
+  if (s.glow !== bgTint) { bgTint = s.glow; if (bgSeen) bgPaint(true); }
+}
 const modeSel = document.getElementById('modeSel'), modeNote = document.getElementById('modeNote');
 const showMode = m => { modeSel.value = m.pending || m.mode || 'normal'; modeNote.textContent = m.pending && m.pending !== m.mode ? `Switching from ${m.mode} - ${NM()} picks it up shortly` : 'Current mode'; };
 modeSel.onchange = () => window.sphere.setMode(modeSel.value).then(showMode);

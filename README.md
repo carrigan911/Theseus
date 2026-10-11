@@ -29,8 +29,8 @@ your PC. When you turn on App control, it can also press buttons in the Claude d
 - **Modes:** Normal, Worker, Night, Weekend, Max perf and Max efficiency. Each mode gives the core its own colour and
   motion. Worker spins faster, Night slows down, and Max perf throws spikes. The current mode is read from a Modes folder
   that you set under Paths.
-- **Backgrounds** behind the sphere: black, space, moving space, a flowing gradient, or space travel. Can be shown as a
-  live wallpaper.
+- **Backgrounds** behind the folded sphere: black, space, moving space, a flowing gradient, or space travel, picked from
+  animated previews under Theseus settings. "Also in tile view" shows it behind the rows too.
 
 ### Sessions
 - Click a tile to read the session in a console card on the desktop, or open it in the Claude app (**Open in Claude**).
