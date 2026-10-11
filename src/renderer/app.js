@@ -227,7 +227,7 @@ function tileScreen(m) {   // the plate's middle in the rows, in window pixels
 }
 function stepTile(dx, dy) {
   if (!spreadOn || spread < 0.9) return;
-  const ms = sphere.meshes().filter(m => m.visible && m.userData.session && (m.userData.session.link || m.userData.session.press || m.userData.session.newTile) && m.geometry.userData.fc);
+  const ms = sphere.meshes().filter(m => m.visible && m.userData.session && (m.userData.session.link || m.userData.session.reader || m.userData.session.press || m.userData.session.newTile) && m.geometry.userData.fc);
   if (!ms.length) return;
   const pts = ms.map(m => ({ m, p: tileScreen(m) }));
   const cur = hovered && hovered.parent && pts.find(q => q.m === hovered);
@@ -326,7 +326,7 @@ const shows = (where, g) => { const t = S && S[where]; return t ? t[g] !== false
 const NEW_TILE = { sessionId: 'new:tile', title: '+ New session', group: 'Active', newTile: true, pct: 0, tokens: null, activity: null, link: null };
 function sphereFeed(f) {
   const arch = Array.isArray(f.archived) && (shows('tilesSphere', 'archived') || shows('tilesRows', 'archived')) ? f.archived : [];
-  return { ...f, sessions: [...f.sessions, NEW_TILE, ...arch] };
+  return { ...f, sessions: [...f.sessions, ...(S && S.appControl ? [NEW_TILE] : []), ...arch] };
 }
 const onSphere = f => f.sessions.filter(s => shows('tilesSphere', tileGroup(s))).length;
 function onFeed(f) {
@@ -368,13 +368,14 @@ const ddList = bar.querySelector('.list'), dd = bar.querySelector('#mode');
 // waiting chip: sessions waiting on your answer (their tiles pulse yellow); a click opens the next one in turn
 const bWait = bar.querySelector('#bWait'); let waitList = [], waitAt = 0;
 function updateWaiting(f) {
-  waitList = (f && Array.isArray(f.sessions) ? f.sessions : []).filter(s => s.activity === 'waiting' && s.link && s.group !== 'Parked' && shows('tilesRows', tileGroup(s)));
+  waitList = (f && Array.isArray(f.sessions) ? f.sessions : []).filter(s => s.activity === 'waiting' && (s.link || s.reader) && s.group !== 'Parked' && shows('tilesRows', tileGroup(s)));
   bWait.style.display = waitList.length ? '' : 'none';
   bWait.querySelector('.n').textContent = waitList.length + ' waiting';
 }
 bWait.onclick = () => {
   if (!waitList.length) return;
   const s = waitList[waitAt++ % waitList.length];
+  if (!s.link) { openConsole(s); return; }   // a reader session: no place in the Claude app
   if (con.close()) keysOff(); overlayOn = true; barCard = ''; cardKind = 'narrow'; window.sphere.overlayOpen(overlayRect(), s.link).then(() => setTimeout(refreshClaude, 800));
 };
 for (const [id, name, col] of MODES) {
@@ -701,6 +702,7 @@ function overlayRect() {
 window.sphere.mode().then(showMode);
 setInterval(() => window.sphere.mode().then(showMode), 3000);
 
+let rebuild0 = false;
 function applySettings(s) {
   const bT = document.getElementById('bTheseus'); if (bT) bT.lastChild.textContent = (s.name || 'Theseus') + ' settings';
   con.setAppControl(s.appControl);
@@ -712,11 +714,12 @@ function applySettings(s) {
   const lr = sphere.setLabelRes(s.labelRes), fsh = sphere.setFlatShape(s.flatShape);
   const tf = sphere.setFilters({ sphere: s.tilesSphere, rows: s.tilesRows }) || lr || fsh;   // label size and flat shape rebuild the tiles too (folded first when spread)
   if (S && S.tileAlign !== s.tileAlign) { sphere.setAlign(s.tileAlign); if (spreadOn) startSpread(); } else sphere.setAlign(s.tileAlign);
+  if (S && !!S.appControl !== !!s.appControl) rebuild0 = true;   // the New session tile comes or goes
   S = s; modeColours(s); showMode(curMode);
   CLOSE_MS = s.closeDelay * 1000; IDLE = s.idleGlow; SPIN = s.spinMinutes > 0 ? (2 * Math.PI) / (s.spinMinutes * 60) : 0;
   glowOnSpeech = s.glowOnSpeech; autoFold = s.autoFold !== false; keepCardsOpen = s.keepCardsOpen !== false; sphere.setActivity(s.tileActivity !== false); sphere.setRing(s.contextRing); captionOn = s.speechCaption !== false; if (!captionOn) cap.classList.remove('on');
   setPanelWear(s.tileWear | 0); sphere.setSwap(s.tileSwap);
-  let rebuild = tf;
+  let rebuild = tf || rebuild0; rebuild0 = false;
   if (sphere.setOpenSpots(s.emptySpots === 'open')) rebuild = true;
   const nm = SIZE_K[s.sphereSize] ? s.sphereSize : 'medium', g = s.sphereGrowth !== false;
   const rowSized = sphere.setRowSize(s.rowTileSize);

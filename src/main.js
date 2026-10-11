@@ -163,6 +163,10 @@ function openSettings(section = '', rect = null) {
     const o = {}; if (section) o.hash = section; if (card) o.query = { card: '1' };
     settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'), o);
     const w = settingsWin; w.once('ready-to-show', () => { if (!w.isDestroyed()) { w.show(); w.focus(); } });
+    if (section === 'setup' && !card) {
+      w.setAlwaysOnTop(true, 'screen-saver');   // the sphere sits at screen-saver level: the first-run card must not open behind it
+      w.on('closed', () => { if (!settings.setupDone) { settings.setupDone = true; saveSettings(); } });
+    }
   }
   if (card) {
     const b = win.getContentBounds();
@@ -320,6 +324,8 @@ function testShots() {
 // one sphere at a time: a second start (autostart + a manual launch) quits at once and does nothing else (no settings, no voice)
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
+// started again (the pinned icon, the Start menu): the running copy shows its sphere if it was hidden
+app.on('second-instance', () => { if (win && !win.isDestroyed() && !win.isVisible()) { win.showInactive(); sendToBottom(); syncBg(); } });
 // the pages' titles say Theseus: every window shows the assistant's name instead
 app.on('browser-window-created', (_e, w) => w.on('page-title-updated', (ev, t) => { ev.preventDefault(); w.setTitle(t.replace(/^Theseus\b/, NAME())); }));
 if (gotLock) app.whenReady().then(() => {
@@ -1310,7 +1316,7 @@ if (gotLock) app.whenReady().then(() => {
   try { audio = require(modPath('audio')).create({ wake: NAME() }); } catch (e) { log('audio module not available: ' + (e && e.message)); }
   try {
     const tmpDir = app.isPackaged ? path.join(app.getPath('userData'), 'rec') : path.join(__dirname, '..', 'data', 'rec'); fs.mkdirSync(tmpDir, { recursive: true });   // installed: never beside the app
-    rec = require(modPath('recorder')).create({ ffmpeg: P.ffmpeg(), tmpDir, prefix: () => settings.recPrefix || NAME() });
+    rec = require(modPath('recorder')).create({ ffmpeg: P.ffmpeg, tmpDir, prefix: () => settings.recPrefix || NAME() });
   } catch (e) { log('recorder module not available: ' + (e && e.message)); }
   let aState = null, rState = null, sysSum = null, listening = false, curMode = { mode: null, pending: null };
   const snapshot = () => ({

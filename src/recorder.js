@@ -1,5 +1,6 @@
 // Screen recorder for Session Sphere (Theseus tools, part B). Own code; the ffmpeg command lines are adapted from the old Mode Buttons recorder.
-// Video: ffmpeg ddagrab (screen / region) or gfxcapture (window, gdigrab as fallback) -> hevc_nvenc cq 23, 60 fps.
+// Video: ffmpeg ddagrab (screen / region) or gfxcapture (window, gdigrab as fallback) -> hevc_nvenc cq 23, 60 fps (no NVIDIA:
+// hevc_amf, else software libx264; found once by a one-frame test encode).
 // Audio: a hidden capture page (renderer/capture.html) records the system sound (getDisplayMedia, audio 'loopback') and the mic (getUserMedia)
 // as 48 kHz float stereo PCM; main feeds it to ffmpeg through Windows named pipes (\\.\pipe\...), so a file has video + up to 2 audio streams.
 // Nothing runs while neither a recording nor the replay buffer is on.
@@ -110,7 +111,27 @@ function makeFeeder(kind) {
 function create(opts = {}) {
   // file names start with the prefix (opts.prefix: a string or a function, read at each use; letters, digits, _ and - only)
   const pre = () => (String((typeof opts.prefix === 'function' ? opts.prefix() : opts.prefix) || 'Recording').replace(/[^\w-]+/g, '_').slice(0, 30) || 'Recording');
-  const ffmpeg = opts.ffmpeg || DEFAULT_FFMPEG;
+  // the ffmpeg path: a function is asked each time (a path set later in settings works without a restart)
+  const ffmpegOf = () => (typeof opts.ffmpeg === 'function' ? opts.ffmpeg() : opts.ffmpeg) || DEFAULT_FFMPEG;
+  // the video encoder: the first that encodes a test frame here; SPHERE_ENC forces one (tests)
+  const ENC = {
+    hevc_nvenc: ['-c:v', 'hevc_nvenc', '-preset', 'p5', '-tune', 'hq', '-rc', 'vbr', '-cq', '23', '-b:v', '0'],
+    hevc_amf: ['-c:v', 'hevc_amf', '-quality', 'quality', '-rc', 'cqp', '-qp_i', '23', '-qp_p', '23'],
+    libx264: ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p'],
+  };
+  let encP = null, encFor = '';
+  const tryEnc = e => new Promise(res => {
+    let p; try { p = spawn(ffmpegOf(), ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=black:s=256x256:d=0.1', '-frames:v', '1', ...ENC[e], '-f', 'null', '-'], { windowsHide: true, stdio: 'ignore' }); } catch { return res(false); }
+    const t = setTimeout(() => { try { p.kill(); } catch { } res(false); }, 10000);
+    p.on('error', () => { clearTimeout(t); res(false); }); p.on('exit', c => { clearTimeout(t); res(c === 0); });
+  });
+  function encoder() {
+    if (encP && encFor === ffmpegOf()) return encP;
+    encFor = ffmpegOf();
+    const order = ENC[process.env.SPHERE_ENC] ? [process.env.SPHERE_ENC] : ['hevc_nvenc', 'hevc_amf', 'libx264'];
+    return (encP = (async () => { for (const e of order) if (await tryEnc(e)) return e; return 'libx264'; })());
+  }
+  const tagFor = codec => codec === 'hevc' ? ['-tag:v', 'hvc1'] : codec === 'h264' ? ['-tag:v', 'avc1'] : [];   // mp4 tags by codec
   const tmpDir = opts.tmpDir || path.join(os.tmpdir(), 'SessionSphere', 'rec');
   const inst = ++instances;
   const ch = n => `rec${inst}:${n}`;
@@ -118,6 +139,7 @@ function create(opts = {}) {
   let disposed = false;
   let recJob = null, replayJob = null, replaySec = 60, replayOpts = null, stopping = null;
   let seq = 0;
+  let replayCodec = 'hevc';                          // the replay ring's codec (its saves are tagged by it)
   const busyOut = new Set();                          // recording files in use (being written or being remuxed): recover() leaves them alone
 
   const logPath = tag => path.join(tmpDir, `ffmpeg-${tag}.log`);
@@ -280,7 +302,7 @@ function create(opts = {}) {
     const lp = logPath(tag);
     try { if (fs.existsSync(lp) && fs.statSync(lp).size > 2e6) fs.unlinkSync(lp); } catch { }
     try { fs.appendFileSync(lp, `${new Date().toISOString()} ffmpeg ${args.join(' ')}\n`); } catch { }
-    const p = spawn(ffmpeg, args, { windowsHide: true, stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    const p = spawn(ffmpegOf(), args, { windowsHide: true, stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     liveProcs.add(p);
     const out = fs.createWriteStream(lp, { flags: 'a' });
     out.on('error', () => { });                     // a failed log open or a late write never takes main down
@@ -298,7 +320,8 @@ function create(opts = {}) {
 
   // Starts an ffmpeg job (recording or replay ring) and resolves when it is up (inputs open, still alive 0.5 s later).
   async function startJob(kind, o, outputArgs, output, useGdi = false) {
-    const s = resolveSource(o);
+    if (!ffmpegOf()) throw new Error('ffmpeg was not found: install it, or set its path under General settings > Paths');
+    const s = resolveSource(o), enc = await encoder();
     let title = '';
     if (useGdi) { const w = (await listWindows()).find(x => x.hwnd === s.hwnd); if (!w) throw new Error('window not found'); title = w.title; }
     const feeders = [];
@@ -312,8 +335,11 @@ function create(opts = {}) {
       maps.push('-map', `${n}:a`); { const nm = f.kind === 'sys' ? 'System' : 'Mic'; meta.push(`-metadata:s:a:${n - 1}`, `title=${nm}`, `-metadata:s:a:${n - 1}`, `handler_name=${nm}`); } n++;
     }
     args.push(...maps, '-fps_mode', 'cfr', '-r', '60');
-    if (useGdi) args.push('-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2');
-    args.push('-c:v', 'hevc_nvenc', '-preset', 'p5', '-tune', 'hq', '-rc', 'vbr', '-cq', '23', '-b:v', '0', '-g', '120', '-force_key_frames', 'expr:gte(t,n_forced*2)');
+    // screen and window capture hand over GPU frames: a software encoder gets them copied down first
+    const vf = useGdi ? 'pad=ceil(iw/2)*2:ceil(ih/2)*2' : enc === 'libx264' ? 'hwdownload,format=bgra,pad=ceil(iw/2)*2:ceil(ih/2)*2' : '';
+    if (vf) args.push('-vf', vf);
+    args.push(...ENC[enc], '-g', '120', '-force_key_frames', 'expr:gte(t,n_forced*2)');
+    if (kind === 'replay') replayCodec = enc === 'libx264' ? 'h264' : 'hevc';
     if (feeders.length) args.push('-c:a', 'aac', '-b:a', '192k', ...meta);
     args.push(...outputArgs);
     const job = { kind, feeders, output, started: Date.now(), proc: null, exited: false, opts: o, source: s, useGdi };
@@ -355,18 +381,18 @@ function create(opts = {}) {
   }
 
   // How far the audio runs ahead of the video: both end at the same stop, so the difference of their lengths is the audio that was recorded
-  // before the first video frame arrived (a window sends its first frame late). Returns seconds to cut from the start of the audio, or 0.
+  // before the first video frame arrived (a window sends its first frame late). -> { lead: seconds to cut from the audio's start or 0, codec }
   function audioLead(file) {
     return new Promise(res => {
-      const probe = path.join(path.dirname(ffmpeg), 'ffprobe.exe');
-      execFile(probe, ['-v', 'error', '-show_entries', 'stream=codec_type:stream_tags=DURATION:stream=duration', '-of', 'json', file], { windowsHide: true, timeout: 15000 }, (err, out) => {
+      const probe = path.join(path.dirname(ffmpegOf()), 'ffprobe.exe');
+      execFile(probe, ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name:stream_tags=DURATION:stream=duration', '-of', 'json', file], { windowsHide: true, timeout: 15000 }, (err, out) => {
         try {
           const st = JSON.parse(out).streams;
           const dur = x => { const t = x.tags && x.tags.DURATION; if (t) { const m = /(\d+):(\d+):([\d.]+)/.exec(t); if (m) return (+m[1]) * 3600 + (+m[2]) * 60 + parseFloat(m[3]); } return parseFloat(x.duration); };
           const v = st.find(x => x.codec_type === 'video'), au = st.filter(x => x.codec_type === 'audio');
           const vd = v && dur(v); const lead = au.length ? Math.min(...au.map(dur)) - vd : 0;
-          res(isFinite(lead) && lead > 0.2 && lead < 30 ? lead : 0);
-        } catch { res(0); }
+          res({ lead: isFinite(lead) && lead > 0.2 && lead < 30 ? lead : 0, codec: v && v.codec_name });
+        } catch { res({ lead: 0, codec: '' }); }
       });
     });
   }
@@ -374,8 +400,8 @@ function create(opts = {}) {
   async function remux(mkv) {
     const mp4 = mkv.replace(/\.mkv$/i, '.mp4');
     if (!fs.existsSync(mkv) || fs.statSync(mkv).size < 1024) return { file: null, error: 'nothing recorded (see ' + logPath('rec') + ')' };
-    const lead = await audioLead(mkv);
-    const tail_ = ['-c', 'copy', '-tag:v', 'hvc1', '-movflags', '+faststart', mp4];
+    const { lead, codec } = await audioLead(mkv);
+    const tail_ = ['-c', 'copy', ...tagFor(codec || 'hevc'), '-movflags', '+faststart', mp4];
     const attempts = lead ? [['-i', mkv, '-ss', lead.toFixed(3), '-i', mkv, '-map', '0:v', '-map', '1:a?', '-map_metadata', '0'], ['-i', mkv, '-map', '0']] : [['-i', mkv, '-map', '0']];
     const limit = 120000 + fs.statSync(mkv).size / 5e4;   // 2 min + 20 s a GB (a copy runs far faster; a long recording is not cut off)
     for (const a of attempts) {
@@ -488,7 +514,7 @@ function create(opts = {}) {
     const lf = path.join(tmp, 'list.txt'); fs.writeFileSync(lf, list);
     const out = uniquePath(outDir, pre() + '_replay_' + stamp(), '.mp4');
     const names = []; [ropts.system && 'System', ropts.mic && 'Mic'].filter(Boolean).forEach((nm, i) => names.push(`-metadata:s:a:${i}`, `title=${nm}`, `-metadata:s:a:${i}`, `handler_name=${nm}`));
-    const p = runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', lf, '-map', '0', '-c', 'copy', '-tag:v', 'hvc1', ...names, '-movflags', '+faststart', out], 'replaysave', false);
+    const p = runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', lf, '-map', '0', '-c', 'copy', ...tagFor(replayCodec), ...names, '-movflags', '+faststart', out], 'replaysave', false);
     const code = await Promise.race([p.exited, sleep(120000).then(() => 'timeout')]);
     if (code === 'timeout') { try { p.kill(); } catch { } await Promise.race([p.exited, sleep(5000)]); }
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { }
@@ -671,7 +697,7 @@ function create(opts = {}) {
   Object.assign(ee, {
     start, stop, setReplay, saveReplay, screenshot, pickRegion: () => pickRegion(false), listWindows, dispose,
     recover, cleanReplay, state, _probePicker: drag => pickRegion(drag ? { drag } : true),
-    _ffmpeg: ffmpeg, _tmpDir: tmpDir
+    get _ffmpeg() { return ffmpegOf(); }, _tmpDir: tmpDir, _encoder: encoder
   });
   return ee;
 }

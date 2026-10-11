@@ -89,7 +89,7 @@ function inside(root, rel) {
 const readJson = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, '')); } catch { return null; } };
 const kindOf = c => !c || typeof c !== 'object' ? '' : c.type || (c.url ? 'http' : c.command ? 'stdio' : '');
 function mcpList(dir) {
-  const home = readJson(path.join(os.homedir(), '.claude.json')) || {}, out = [];
+  const home = readJson(require('./paths').claudeJson()) || {}, out = [];
   const proj = home.projects && (home.projects[dir] || home.projects[dir.replace(/\\/g, '/')] || Object.entries(home.projects).find(([k]) => path.resolve(k).toLowerCase() === path.resolve(dir).toLowerCase())?.[1]);
   for (const [n, c] of Object.entries(home.mcpServers || {})) out.push({ name: n, scope: 'user', kind: kindOf(c), on: true, fixed: true });
   for (const [n, c] of Object.entries((proj && proj.mcpServers) || {})) out.push({ name: n, scope: 'local', kind: kindOf(c), on: true, fixed: true });
@@ -114,7 +114,7 @@ function mcpSet(dir, name, on) {
 }
 
 // ---- Routines: the local prompts, ~/.claude/scheduled-tasks/<name>/SKILL.md
-const TASKS = () => path.join(os.homedir(), '.claude', 'scheduled-tasks');
+const TASKS = () => path.join(require('./paths').claudeDir(), 'scheduled-tasks');
 const taskFile = n => typeof n === 'string' && /^[\w.-]{1,100}$/.test(n) && !/^\.+$/.test(n) ? path.join(TASKS(), n, 'SKILL.md') : null;
 function routines() {
   const out = [];

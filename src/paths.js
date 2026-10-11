@@ -6,6 +6,7 @@ const path = require('path');
 
 let get = () => ({});   // the live settings (main passes a getter, so a change is seen at once)
 const found = new Map();
+const videos = () => { try { return require('electron').app.getPath('videos'); } catch { return path.join(os.homedir(), 'Videos'); } };
 // an exe on PATH's absolute folders (never the current folder), cached
 function onPath(name) {
   if (found.has(name)) return found.get(name);
@@ -41,8 +42,12 @@ const P = {
   },
   ffmpeg: () => get().ffmpeg || onPath('ffmpeg.exe'),
   readerDays: () => Math.max(1, Math.min(60, Number(get().readerDays) || 7)),
-  transcripts: () => get().transcriptsRoot || path.join(os.homedir(), '.claude', 'projects'),
-  recDir: () => get().recDir || path.join(os.homedir(), 'Videos'),
+  // Claude Code's folder: CLAUDE_CONFIG_DIR when set, else ~/.claude (.claude.json sits inside it then, else in the home folder)
+  claudeDir: () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
+  claudeJson: () => process.env.CLAUDE_CONFIG_DIR ? path.join(process.env.CLAUDE_CONFIG_DIR, '.claude.json') : path.join(os.homedir(), '.claude.json'),
+  transcripts: () => get().transcriptsRoot || path.join(P.claudeDir(), 'projects'),
+  // the Videos known folder (it may be moved, e.g. to OneDrive), else ~/Videos
+  recDir: () => get().recDir || videos(),
   onPath,
 };
 module.exports = P;
