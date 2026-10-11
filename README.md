@@ -2,6 +2,8 @@
 
 A desktop session sphere for your Claude Code sessions, for Windows. You can talk to it.
 
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/fullcircle_0)
+
 ![Theseus: the sphere turning through its modes, the tile view, and two sessions being replaced](docs/demo.gif)
 
 *Demo sessions with made-up names. The sphere turns through the six modes, spreads into the tile view, and two tiles are
@@ -104,6 +106,9 @@ would.
 
 Anthropic's terms restrict automated access to its services, so use App control at your own risk. It can also stop
 working when the Claude app updates. While it is off, the console is read-only.
+
+## Support
+Theseus is free. If it saves you time, you can buy me a coffee: [buymeacoffee.com/fullcircle_0](https://buymeacoffee.com/fullcircle_0)
 
 ## License
 MIT, see [LICENSE](LICENSE).
