@@ -787,6 +787,8 @@ export function createSphere(scene) {
       const lk = [s.title, s.model, s.effort, t.res, s.bg || 0, !!s.draft].join('|');              // redraw a label only when its text or size changes (picture plates have none)
       if (!s.face && t.lk !== lk) { const old = t.label; t.lk = lk; t.label = labelTexture(s, t.res); if (old && old !== t.mesh.material.userData.u.uLabel.value) old.dispose(); }
       const was = before.get(s.sessionId);
+      // a clear-swap keeps the session (and its tile): the swap effect plays in place, from the wear it had before the clear
+      if (!feed.view && was && s.renewedAt && s.renewedAt !== was.renewedAt && Date.now() - s.renewedAt < 120000 && !t.reborn) startRebirth(t, { ...was, pct: s.renewedPct != null ? s.renewedPct : was.pct });
       if (!feed.view && was && was.tokens != null && s.tokens != null && s.tokens - was.tokens >= 1500) t.ripple = performance.now();   // a working turn
       // mid-rebirth the old label shows only until the burst; after it the new one (a feed then must not bring the old back)
       setPanelState(t.mesh.material, { pct: (t.reborn && t.reborn.mode > 1 && !t.reborn.burst ? t.reborn.pct : s.pct) || 0, parked: s.group === 'Parked' || s.group === 'Archived' || s.dim, gold: t.mgr || s.gold, label: s.face ? null : t.reborn && !t.reborn.burst ? t.reborn.label : t.label });

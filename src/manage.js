@@ -32,7 +32,7 @@ function create(api) {
   const t0 = Date.now();
   const S = () => api.settings();
   const file = path.join(api.dir, 'manage.json'), logFile = path.join(api.dir, 'manage.log');
-  let st = { groups: {}, alias: {}, moved: {}, queue: [], swaps: {}, skips: {}, resumed: {}, mode: 'normal', sched: null, warned: {} };
+  let st = { groups: {}, alias: {}, moved: {}, renewed: {}, queue: [], swaps: {}, skips: {}, resumed: {}, mode: 'normal', sched: null, warned: {} };
   try { st = { ...st, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch {}
   for (const [id, m] of Object.entries(st.moved || {})) {   // clear-swapped sessions read their new conversation after a restart too
     if (m && m.file && Date.now() - m.at < 7 * 864e5 && fs.existsSync(m.file)) api.setMoved(id, m.file); else delete st.moved[id];
@@ -93,9 +93,22 @@ function create(api) {
     outside = f.sessions.some(s => s.group === 'Session Manager');
     if (!on()) { feed = f; return f; }
     const line = S().swapTokens || 200000;
-    const sessions = f.sessions.filter(s => st.groups[s.sessionId] !== 'Cleared').map(s => {   // Cleared: the old transcript of a clear-swapped session (built-in reader)
+    // Cleared: the old transcript of a clear-swapped session (built-in reader); a reprompted conversation not yet taken over
+    // (the reader names it after the reprompt) stays hidden, so it gets the old tile's seat instead of one of its own
+    const pending = Object.values(st.swaps).filter(w => (w.stage === 'resent' || w.stage === 'casked') && w.dir && w.askWall);
+    const unclaimed = s => {   // born in a clearing session's folder since its ask
+      if (!pending.length || !s.reader || st.alias[s.sessionId]) return false;
+      const tf = api.transcriptOf(s.sessionId); if (!tf) return false;   // (the built feed leaves the paths out)
+      let b; try { b = fs.statSync(tf).birthtimeMs; } catch { return false; }
+      return pending.some(w => !same(tf, w.old) && same(path.dirname(tf), w.dir) && b >= w.askWall - 2000);
+    };
+    const sessions = f.sessions.filter(s => st.groups[s.sessionId] !== 'Cleared' && !unclaimed(s)).map(s => {
       const g = st.groups[s.sessionId] || (s.group === 'Session Manager' ? s.group : null);
       const o = { ...s, swapAt: line, pct: s.tokens != null ? Math.min(1, Math.max(0, s.tokens / line)) : s.pct };
+      // a clear-swap: the tile plays the swap effect (renewedAt), from the wear it had (renewedPct); the reader's new
+      // conversation takes the old one's seat (parentId)
+      const rn = st.renewed[s.sessionId];
+      if (rn) { o.renewedAt = rn.at; o.renewedPct = rn.pct; if (rn.from !== s.sessionId) o.parentId = rn.from; }
       if (g) o.group = g;
       if (st.alias[s.sessionId]) o.title = st.alias[s.sessionId];   // its new transcript would be named after the reprompt
       return o;
@@ -267,6 +280,8 @@ function create(api) {
   function landedNew(s, w, nf) {
     const id = s.sessionId, nid = path.basename(nf, '.jsonl');
     api.setMoved(id, nf); st.moved[id] = { file: nf, at: Date.now() };   // kept, so a restart still reads the new conversation
+    for (const [k, v] of Object.entries(st.renewed)) if (!v || Date.now() - v.at > 864e5) delete st.renewed[k];
+    st.renewed[s.reader ? nid : id] = { at: Date.now(), from: id, pct: s.pct != null ? s.pct : null };
     if (s.reader) {   // the built-in reader names sessions by transcript: the new one takes over the tile
       st.groups[nid] = st.groups[id] || 'Active'; st.alias[nid] = w.title; st.groups[id] = 'Cleared';
       cpCache.set(nid, w.cp); delete st.skips[nid];

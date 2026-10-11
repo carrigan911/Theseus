@@ -13,7 +13,7 @@ const P = require('./paths');
 // (state, snap, peek, artifacts, routines) and showing the app as a card stay available
 const APP_ACTS = new Set(['send', 'newsession', 'answer', 'permit', 'plan', 'set', 'manage', 'msgact', 'commands', 'attach', 'settings']);
 { const raw = claudeUi.send; claudeUi.send = (cmd, ms) => cmd && APP_ACTS.has(cmd.cmd) && !settings.appControl ? Promise.resolve({ ok: false, why: 'App control is off (General settings)' }) : raw(cmd, ms); }
-let lastFeed = { sessions: [] };
+let lastFeed = { sessions: [] }, rawFeed = null;   // rawFeed: the feed before session management (a re-apply starts from it)
 const attn = new Map();   // sessionId -> { note, at }: a session asked for the user (its needs_you tool); the tile shows it waiting
 
 if (process.env.SPHERE_USERDATA) app.setPath('userData', process.env.SPHERE_USERDATA);   // tests: own settings + lock, so a test instance runs beside the real one
@@ -354,10 +354,10 @@ function setAutostart() {
   // renamed from Session Sphere (user 10-9, installer 10-10): drop the old Run entry so it does not start twice
   app.setLoginItemSettings({ ...o, openAtLogin: false, name: 'Session Sphere' });
 }
-// test pictures of the sphere window itself, even under other windows: SPHERE_SHOTS="<dir>;<count>;<ms apart>" (first after 8 s)
+// test pictures of the sphere window itself, even under other windows: SPHERE_SHOTS="<dir>;<count>;<ms apart>[;<first after ms, 8000>]"
 if (process.env.SPHERE_SHOTS) app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 function testShots() {
-  const [dir, count = 1, ms = 500] = process.env.SPHERE_SHOTS.split(';');
+  const [dir, count = 1, ms = 500, first = 8000] = process.env.SPHERE_SHOTS.split(";");
   win.webContents.setBackgroundThrottling(false);
   let i = 0;
   const take = async () => {
@@ -366,7 +366,7 @@ function testShots() {
     fs.writeFileSync(path.join(dir, `shot_${String(++i).padStart(2, '0')}.png`), img.toPNG());
     setTimeout(take, +ms);
   };
-  setTimeout(take, 8000);
+  setTimeout(take, +first);
 }
 // one sphere at a time: a second start (autostart + a manual launch) quits at once and does nothing else (no settings, no voice)
 const gotLock = app.requestSingleInstanceLock();
@@ -2650,7 +2650,7 @@ if (gotLock) app.whenReady().then(() => {
     transcriptOf, setMoved: (id, f) => moved.set(id, f), bornOf: id => { const f = transcriptOf(id); return f ? born(f) : -1; },
     awaiting: id => awaiting.get(id) === true || attn.has(String(id)), blocked: () => !!(overlay || opening),
     cap: text => vCap('', text), say: text => { if (settings.askSpeak) say(text); }, modeChanged: () => {},
-    changed: () => { if (settings.manageOn) { lastFeed = mgr.apply(lastFeed); feedOut(); } },
+    changed: () => { if (settings.manageOn) { lastFeed = mgr.apply(rawFeed || lastFeed); feedOut(); } },
   });
   rulesI = require('./rules').create({ claudeDir: P.claudeDir, dir: app.getPath('userData'), log });
   ipcMain.handle('manage-act', async (e, a) => {
@@ -2674,7 +2674,7 @@ if (gotLock) app.whenReady().then(() => {
   });
   // a moved transcript (rewind, clear-swap) counts for the tiles' tokens and activity too, until the feed names a newer one
   feed.setResolve((id, f) => { const mv = moved.get(id); return mv && born(mv) >= 0 && !(born(f) >= born(mv)) ? mv : f; });
-  feed.watch(f => { lastFeed = mgr.apply(f); attnTidy(); cycleVoice(f); feedOut(); mgr.tick(); });
+  feed.watch(f => { rawFeed = f; lastFeed = mgr.apply(f); attnTidy(); cycleVoice(f); feedOut(); mgr.tick(); });
   // the renderer may still be loading when the first state comes (a line already playing at start): it gets the last one once loaded
   let lastTalk = null;
   voice.watch(on => { lastTalk = on; if (win && !win.isDestroyed() && !win.webContents.isLoading()) win.webContents.send('talking', on); });
