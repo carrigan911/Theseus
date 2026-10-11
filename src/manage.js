@@ -12,6 +12,7 @@ const CANCEL_MS = 30000, READY_MS = 15 * 60000, RESUMED_MS = 3 * 60000;
 const MSG = {
   swap: cp => `Swap: bring your checkpoint up to date (${cp}), commit, then reply SWAP-READY.`,
   cont: cp => `Continue the task. Read your checkpoint first: ${cp}`,
+  fresh: cp => `You are the fresh session after a swap; the swap is done, so do not reply SWAP-READY. Read your checkpoint first: ${cp}, then continue the task.`,
   park: cp => `Park: commit, update your checkpoint (${cp}), then stop.`,
 };
 const baseTitle = t => String(t || '').replace(/\s*\(old\b[^)]*\)\s*$/i, '');
@@ -20,6 +21,8 @@ const hm = s => { const m = /^(\d\d):(\d\d)$/.exec(s || ''); return m ? +m[1] * 
 
 function create(api) {
   const DRY = !!process.env.SPHERE_MANAGE_DRY;
+  const ONLY = process.env.SPHERE_MANAGE_ONLY ? new RegExp(process.env.SPHERE_MANAGE_ONLY, "i") : null;   // live tests: act only on sessions whose title matches
+  const mine = s => !!s && (!ONLY || ONLY.test(String(s.title || "")));
   const now = () => process.env.SPHERE_CLOCK ? Date.parse(process.env.SPHERE_CLOCK) + (Date.now() - t0) : Date.now();
   const t0 = Date.now();
   const S = () => api.settings();
@@ -57,6 +60,8 @@ function create(api) {
   const working = s => s && s.activity === 'working';
   // the checkpoint: one named in the session's first lines (…/.claude/checkpoints/x.md), else <folder>/.claude/checkpoints/<slug>.md
   const cpCache = new Map();
+  const full = p => typeof p === 'string' && /^([A-Za-z]:[\\/]|\\\\)/.test(p);
+  const home = s => full(s.cwd) ? s.cwd : full(s.folder) ? s.folder : null;   // the session's full working folder
   function cpOf(s) {
     if (cpCache.has(s.sessionId)) return cpCache.get(s.sessionId);
     let cp = null;
@@ -66,9 +71,10 @@ function create(api) {
       const txt = b.toString('utf8', 0, n).replace(/\\\\/g, '\\');
       const abs = /[A-Za-z]:[\\/][^"\s<>|*?]*?[\\/]\.claude[\\/]checkpoints[\\/][\w.-]+\.md/.exec(txt);
       const rel = !abs && /\.claude[\\/]checkpoints[\\/]([\w.-]+\.md)/.exec(txt);
-      if (abs) cp = path.normalize(abs[0]); else if (rel && s.folder) cp = path.join(s.folder, '.claude', 'checkpoints', rel[1]);
+      if (abs) cp = path.normalize(abs[0]); else if (rel && home(s)) cp = path.join(home(s), '.claude', 'checkpoints', rel[1]);
     } catch {}
-    if (!cp) cp = path.join(s.folder || '.', '.claude', 'checkpoints', slug(s.title) + '.md');
+    if (!cp && home(s)) cp = path.join(home(s), '.claude', 'checkpoints', slug(s.title) + '.md');
+    if (!cp) cp = `.claude/checkpoints/${slug(s.title)}.md in your project folder`;   // no full path known (an outside feed without cwd)
     cpCache.set(s.sessionId, cp);
     return cp;
   }
@@ -134,7 +140,7 @@ function create(api) {
       if (!idle(s)) return;
       const rn = await act('manage', id, 'rename', w.title + ' (old)');
       if (!rn.ok) { log(`swap "${w.title}": rename to (old) failed (${rn.why}), trying again`); return; }
-      const r = await act('new', w.folder, w.model, MSG.cont(w.cp));
+      const r = await act('new', w.folder, w.model, MSG.fresh(w.cp));
       if (!r.ok) {
         log(`swap "${w.title}": start failed (${r.why})`);
         await act('manage', id, 'rename', w.title);
@@ -186,7 +192,7 @@ function create(api) {
     st.mode = m; save(); log(`mode ${m} (${why})`); api.modeChanged(m);
     const msg = ((S().modeMsgs || {})[m] || '').trim();
     if (quiet || !msg || !appCtl()) return;
-    for (const s of feed.sessions) if (s.group === 'Active' && s.title) {
+    for (const s of feed.sessions) if (s.group === 'Active' && s.title && mine(s)) {
       const r = await act('send', s.sessionId, msg); log(`mode message to "${s.title}": ${r.ok ? 'ok' : r.why}`);
     }
   }
@@ -229,7 +235,7 @@ function create(api) {
     let n = feed.sessions.filter(s => s.group === 'Active' && (working(s) || st.resumed[s.sessionId])).length;
     for (const k of [...st.queue]) {
       if (n >= capNow()) break;
-      if (!sess(k)) continue;
+      if (!mine(sess(k))) continue;
       const r = await resume(k, 'queue'); if (r.ok) n++;
     }
   }
@@ -241,7 +247,7 @@ function create(api) {
     try {
       schedTick();
       if (outside && !S().manageOutsideOk) warn('outside', 'Another session manager is running. Theseus holds its swaps and queue until you confirm in Theseus settings.');
-      if (swapsOn()) for (const s of feed.sessions) if (s.group === 'Active' || st.swaps[s.sessionId]) { if (!api.blocked()) await swapStep(s); }
+      if (swapsOn()) for (const s of feed.sessions) if (mine(s) && (s.group === 'Active' || st.swaps[s.sessionId])) { if (!api.blocked()) await swapStep(s); }
       if (!api.blocked()) await fill();
       for (const k of Object.keys(st.warned)) if (k.startsWith('line:') && !st.swaps[k.slice(5)]) { const s = sess(k.slice(5)); if (!s || !due(s)) { delete st.warned[k]; save(); } }
     } catch (e) { log('error: ' + (e && e.message)); }

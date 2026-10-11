@@ -29,7 +29,7 @@ function build(raw) {
     if (group !== 'Parked' && typeof s.transcript === 'string' && s.transcript) { const t = contextTokens(s.transcript); if (t != null) tokens = t; act = activity(s.transcript); }
     const pct = tokens != null ? Math.min(1, Math.max(0, tokens / swapAt)) : Math.min(1, Math.max(0, (num(s.contextPct) || 0) / 100));
     return { sessionId: id, title: str(s.title) || '?', model: str(s.model), effort: str(s.effort), group,
-             parentId: str(s.parentId) || null, folder: str(s.folder) || null, link: s.reader ? '' : str(s.link) || `claude://claude.ai/epitaxy/${id}`, tokens, swapAt, pct, activity: act,
+             parentId: str(s.parentId) || null, folder: str(s.folder) || null, cwd: str(s.cwd) || null, link: s.reader ? '' : str(s.link) || `claude://claude.ai/epitaxy/${id}`, tokens, swapAt, pct, activity: act,
              ...(s.reader ? { reader: true } : {}) };   // a reader session has no app link: it opens in the console only
   });
   // a swap leaves "X (old ...)" beside the fresh "X": the fresh one takes over (parentId -> same seat) and the old one goes

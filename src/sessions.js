@@ -59,7 +59,7 @@ function scan(o = {}) {
   const sessions = [];
   for (const { file, st } of found.slice(0, max)) {
     const i = info(file, st); if (!i) continue;
-    sessions.push({ sessionId: path.basename(file, '.jsonl'), title: i.title, model: i.model, folder: folderOf(i.cwd) || null, transcript: file, reader: true,
+    sessions.push({ sessionId: path.basename(file, '.jsonl'), title: i.title, model: i.model, folder: folderOf(i.cwd) || null, cwd: i.cwd || null, transcript: file, reader: true,
       group: Date.now() - st.mtimeMs < 864e5 ? 'Active' : 'Ungrouped' });   // touched in the last day = Active
   }
   for (const k of cache.keys()) if (!found.some(x => x.file === k)) cache.delete(k);
