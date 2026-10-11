@@ -236,9 +236,14 @@
   <h2>Voice commands</h2>
   <div class="row"><label>Listen<small id="voiceNote">Offline, built-in Windows recognition</small></label>
     <select data-k="voiceCmd"><option value="off">Off</option><option value="ptt">Push-to-talk</option><option value="wake">Wake word</option><option value="always">Always on</option></select></div>
-  <div class="row"><label><small>Push-to-talk: hold Right Ctrl and speak. Wake word: say "<span class="nm">Theseus</span>", then the command. Commands: system status, mute mic, unmute mic, next output, next mic, start recording, stop recording, save replay, screenshot, mode &lt;name&gt;.</small></label></div>
+  <div class="row"><label><small>Push-to-talk: hold Right Ctrl and speak. Wake word: say "<span class="nm">Theseus</span>", then the command. Commands: system status, mute mic, unmute mic, next output, next mic, start recording, stop recording, save replay, screenshot, mode &lt;name&gt;. Sessions (with Ask on): open &lt;title&gt;, new session / new task, new session in &lt;project&gt; &lt;task&gt;, tell &lt;title&gt; &lt;message&gt;, what did &lt;title&gt; say, stop &lt;title&gt;.</small></label></div>
   <h2 data-addon="whisper">Voice questions</h2>
   <div class="row" data-addon="whisper"><label>Questions<small>"<span class="nm">Theseus</span>" + any question that is not a command (push-to-talk: just ask). Claude answers; local Whisper hears it</small></label><input type="checkbox" data-k="voiceAsk"></div>
+  <div class="row" data-addon="whisper"><label>Let it act<small>Claude may open, start, message, answer and stop sessions and run PC actions when you ask. Sending, starting, answering and stopping are read back first, with time to say cancel</small></label><input type="checkbox" data-k="askActions"></div>
+  <div class="row"><label>Theseus tools in your sessions<small id="mcpNote">Adds Theseus to Claude Code, so your sessions can speak to you, show a caption, mark their tile as needing you, and read or search other sessions. New sessions get it</small></label><button id="mcpOn">Add</button> <button id="mcpOff">Remove</button></div>
+  <div class="row"><label>Sessions may use the tools<small>Off: the sphere refuses their calls</small></label><input type="checkbox" data-k="sessionTools"></div>
+  <div class="row"><label>Sessions may speak<small>Off: what they say shows as a caption only</small></label><input type="checkbox" data-k="sessionSpeak"></div>
+  <div class="row"><label>Sessions may message each other<small>A session can send another one a message, marked with its title. Needs App control</small></label><input type="checkbox" data-k="sessionsMessage"></div>
   <div class="row" data-addon="whisper"><label>Web lookups<small>Search the web when a question needs current facts (news, prices, weather)</small></label><input type="checkbox" data-k="askWeb"></div>
   <div class="row" data-addon="whisper"><label>Speak answers<small>Off: the answer shows only as the caption under the sphere</small></label><input type="checkbox" data-k="askSpeak"></div>
   <div class="row" data-addon="whisper"><label><small>Sessions by voice: "tell &lt;session&gt; …" (read back, sent after 3 s unless you say cancel), "what did &lt;session&gt; say", "stop &lt;session&gt;" (say yes)</small></label></div>
@@ -461,6 +466,13 @@ window.sphere.setupInfo().then(f => { if (!f) return; const t = [['git', f.git],
   $('setupFound').innerHTML = t.map(([n, ok]) => `${ok ? '✓' : '✗'} ${n}`).join(' · ') + (f.ffmpeg ? '' : '<br>Without ffmpeg there is no recording; set its path under Paths.'); });
 $('recDirBtn').onclick = () => window.sphere.pickFolder().then(p => { if (p) window.sphere.setSettings({ recDir: p }); });
 // Voice Ask sign-in: the token is kept by main in its own file (not in settings); Test asks Claude for one word
+// the sphere's MCP server in Claude Code (user scope)
+const mcpNote = (t, bad) => { $('mcpNote').textContent = t; $('mcpNote').style.color = bad ? '#e5484d' : ''; };
+const mcpShow = r => { if (!r) return; if (!r.ok) return mcpNote(r.why || 'That did not work.', true); $('mcpOn').disabled = !!r.on; $('mcpOff').disabled = !r.on;
+  if (r.on) mcpNote('Added to Claude Code: sessions started from now on have the Theseus tools'); };
+window.sphere.mcpRegister?.().then(mcpShow);
+$('mcpOn').onclick = () => { mcpNote('Adding…'); window.sphere.mcpRegister(true).then(mcpShow); };
+$('mcpOff').onclick = () => { mcpNote('Removing…'); window.sphere.mcpRegister(false).then(r => { mcpShow(r); if (r && r.ok && !r.on) mcpNote('Removed from Claude Code'); }); };
 const askNote = (t, bad) => { $('askNote').textContent = t; $('askNote').style.color = bad ? '#e5484d' : ''; };
 window.sphere.askToken().then(has => { if (has) askNote('Token saved. Test checks it'); });
 $('askSave').onclick = () => window.sphere.askToken($('askTok').value).then(has => { $('askTok').value = ''; askNote(has ? 'Token saved. Test checks it' : 'No token: uses the CLI login'); });

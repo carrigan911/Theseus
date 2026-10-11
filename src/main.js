@@ -14,6 +14,7 @@ const P = require('./paths');
 const APP_ACTS = new Set(['send', 'newsession', 'answer', 'permit', 'plan', 'set', 'manage', 'msgact', 'commands', 'attach', 'settings']);
 { const raw = claudeUi.send; claudeUi.send = (cmd, ms) => cmd && APP_ACTS.has(cmd.cmd) && !settings.appControl ? Promise.resolve({ ok: false, why: 'App control is off (General settings)' }) : raw(cmd, ms); }
 let lastFeed = { sessions: [] };
+const attn = new Map();   // sessionId -> { note, at }: a session asked for the user (its needs_you tool); the tile shows it waiting
 
 if (process.env.SPHERE_USERDATA) app.setPath('userData', process.env.SPHERE_USERDATA);   // tests: own settings + lock, so a test instance runs beside the real one
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
@@ -21,7 +22,7 @@ const defaults = {
   side: 'left', display: 'primary', glow: '#3da5ff',
   fps: 30, renderScale: 1.5, labelRes: 1024,                 // frame cap (0 = display rate), supersampling, label pixels
   closeDelay: 3, spinMinutes: 2, idleGlow: 0.3,             // fold-back delay (s), one turn every N min (0 = still), idle core
-  autoFold: true, keepCardsOpen: true, tileActivity: true, contextRing: true, speechCaption: true, voiceAsk: true, askWeb: true, askSpeak: true, claudeTray: false, tileWear: 0, tileSwap: 6, tileWearPreview: false, tileSwapPreview: false,   // tile rows fold back after the delay; an open card or menu stays until closed; working / waiting / idle looks
+  autoFold: true, keepCardsOpen: true, tileActivity: true, contextRing: true, speechCaption: true, voiceAsk: true, askActions: true, sessionTools: true, sessionSpeak: true, sessionsMessage: false, askWeb: true, askSpeak: true, claudeTray: false, tileWear: 0, tileSwap: 6, tileWearPreview: false, tileSwapPreview: false,   // tile rows fold back after the delay; an open card or menu stays until closed; working / waiting / idle looks
   glowOnSpeech: true, voice: 'bm_lewis', voiceSpeed: 1.0, voiceCycle: false, voiceCycleList: [], voiceCycleMgr: '',   // talking glow; EchoStatus default voice (stateoice.json)
   autostart: false,
   sphereSize: 'medium', sphereGrowth: true, emptySpots: 'tiles', rowTileSize: 'large',   // small / medium / large / xlarge; growth: the sphere grows with the session count
@@ -67,7 +68,7 @@ const VOICE = v => typeof v === 'string' && /^[a-z]{2}_[a-z0-9_]{1,30}$/i.test(v
 const RULES = {
   side: en('left', 'right', 'full'), display: v => typeof v === 'string' && v.length <= 40 ? v : typeof v === 'number' && isFinite(v) ? String(v) : undefined,
   glow: col, fps: nm(0, 240), renderScale: nm(0.5, 4), labelRes: v => { v = nm(256, 4096)(v); return v === undefined ? v : Math.round(v); },
-  closeDelay: nm(0, 60), spinMinutes: nm(0, 120), idleGlow: nm(0, 1), autoFold: bl, keepCardsOpen: bl, claudeTray: bl, tileActivity: bl, contextRing: bl, speechCaption: bl, voiceAsk: bl, askWeb: bl, askSpeak: bl, tileWear: v => { v = nm(0, 12)(v); return v === undefined ? v : Math.round(v); }, tileSwap: en(1, 2, 3, 4, 5, 6), tileWearPreview: bl, tileSwapPreview: bl, glowOnSpeech: bl,
+  closeDelay: nm(0, 60), spinMinutes: nm(0, 120), idleGlow: nm(0, 1), autoFold: bl, keepCardsOpen: bl, claudeTray: bl, tileActivity: bl, contextRing: bl, speechCaption: bl, voiceAsk: bl, askActions: bl, sessionTools: bl, sessionSpeak: bl, sessionsMessage: bl, askWeb: bl, askSpeak: bl, tileWear: v => { v = nm(0, 12)(v); return v === undefined ? v : Math.round(v); }, tileSwap: en(1, 2, 3, 4, 5, 6), tileWearPreview: bl, tileSwapPreview: bl, glowOnSpeech: bl,
   voice: VOICE, voiceSpeed: nm(0.5, 2), voiceCycle: bl, voiceCycleList: v => Array.isArray(v) ? v.filter(x => VOICE(x)).slice(0, 80) : undefined,
   voiceCycleMgr: v => typeof v === 'string' && v.length <= 100 ? v : undefined, autostart: bl,
   sphereSize: en('small', 'medium', 'large', 'xlarge'), sphereGrowth: bl, emptySpots: en('tiles', 'open'), rowTileSize: en('large', 'medium', 'small'), tileAlign: en('left', 'center', 'right'), flatShape: en('regular', 'hexagon'), coreFollowsMode: bl, modeMotion: bl, spikeStrength: nm(0, 2),
@@ -1000,15 +1001,16 @@ if (gotLock) app.whenReady().then(() => {
       let o = s; if (awaiting.get(s.sessionId) === true && s.activity !== 'waiting') o = { ...o, activity: 'waiting' };
       const b = bgOf.get(String(s.sessionId)); if (b) o = { ...o, bg: b };
       if (drafts[String(s.sessionId)]) o = { ...o, draft: true };
+      const at = attn.get(String(s.sessionId)); if (at) o = { ...o, activity: 'waiting', note: at.note };
       return o;
     };
-    win.webContents.send('feed', awaiting.size || bgOf.size || Object.keys(drafts).length ? { ...f, sessions: f.sessions.map(more) } : f);
+    win.webContents.send('feed', awaiting.size || bgOf.size || attn.size || Object.keys(drafts).length ? { ...f, sessions: f.sessions.map(more) } : f);
   }
   const conStop = () => { if (conRd) conRd.close(); conRd = conId = null; };
   const SID = /^(new:)?[\w-]{1,80}$/;
   ipcMain.handle('console-open', (e, sessionId) => {
     if (!fromWin(e) || typeof sessionId !== 'string' || !SID.test(sessionId)) return { ok: false, why: 'bad session' };
-    conStop(); trayNoted = null;
+    conStop(); trayNoted = null; if (attn.delete(sessionId)) feedOut();
     const s = sessFor(sessionId);
     if (!s) return { ok: false, why: 'unknown session' };
     const file = transcriptOf(sessionId);
@@ -1558,6 +1560,7 @@ if (gotLock) app.whenReady().then(() => {
     async screenshot() {
       needR(); fs.mkdirSync(P.recDir(), { recursive: true });
       const r = await rec.screenshot({ ...(await recSource(false)), outDir: P.recDir() }); notify('Screenshot: ' + base(r && r.file), 4000);
+      return r && r.file;
     },
     async pickRegion() { needR(); const r = await rec.pickRegion(); if (r) { settings.recRegion = r; saveSettings(); pushSettings(); notify(`Region ${r.w}x${r.h}`); } },
     async pickWindow() { needR(); const w = await pickWindow(); if (w) { recHwnd = w.hwnd; pushTools(); notify('Window: ' + (w.title || w.exe || '').slice(0, 40)); return { hwnd: w.hwnd, title: w.title }; } return null; },
@@ -1625,13 +1628,14 @@ if (gotLock) app.whenReady().then(() => {
   // ---- voice commands (the helper recognises; we act and answer through speak.ps1 plus a strip notice) ----
   async function runCommand(c) {
     if (!c || typeof c.cmd !== 'string') return;
+    const speak = c.quiet ? () => {} : speak0;   // Ask's tools: Ask's own reply says it
     log(`voice: ${c.cmd}${c.arg ? ' ' + c.arg : ''} "${c.text || ''}" (${c.confidence})`);
     const short = n => String(n || '').replace(/\s*\(.*\)\s*$/, '');
     // always mode hears everything: ending a recording or saving the replay needs the wake word, so nearby speech cannot do it
     if ((c.cmd === 'recStop' || c.cmd === 'saveReplay') && settings.voiceCmd === 'always' && !c.wake) { log(`voice: ${c.cmd} ignored (always mode, no wake word)`); return; }
     try {
       switch (c.cmd) {
-        case 'status': { const sm = await showReadout(); notify('Status'); speak(sm ? sm.say : 'The system readout is not available.'); break; }
+        case 'status': { const sm = await showReadout(); notify('Status'); speak(sm ? sm.say : 'The system readout is not available.'); return sm ? sm.say : 'The system readout is not available.'; }
         case 'muteMic': await acts.muteMic(true); speak('Microphone muted.'); break;
         case 'unmuteMic': await acts.muteMic(false); speak('Microphone on.'); break;
         case 'nextOut': await acts.nextOut(); speak(`Output ${short(aState && aState.out && aState.out.name)}.`); break;
@@ -1643,8 +1647,10 @@ if (gotLock) app.whenReady().then(() => {
         case 'mode': if (MODES.includes(c.arg)) { setModeNotice(c.arg); speak(`${T.MODE_NAMES[c.arg]} mode requested.`); } break;
         default: log('voice: unknown command ' + c.cmd);
       }
-    } catch (e) { log(`voice ${c.cmd} failed: ${e && e.message}`); notify(`${c.cmd} failed`, 3000); speak('That did not work.'); }
+    } catch (e) { log(`voice ${c.cmd} failed: ${e && e.message}`); notify(`${c.cmd} failed`, 3000); speak('That did not work.'); if (c.quiet) throw e; }
+    return 'done';
   }
+  const speak0 = (...a) => speak(...a);
 
   // ---- Voice Ask (Docs/Specs/VoiceAsk_Spec.md): "Theseus" + a question -> Whisper -> Claude (Haiku, Sonnet if hard) -> voice + caption ----
   const opt = n => { try { return require(modPath(n)); } catch (e) { log(`${n} module not available: ${e && e.message}`); return null; } };
@@ -1706,10 +1712,11 @@ if (gotLock) app.whenReady().then(() => {
     if (/^(cancel|no|nope|don t|do not|stop|never mind)\b/.test(n)) { clearTimeout(p.timer); vPend = null; vCap(n, 'Cancelled.'); vSay('Cancelled.'); log('console voice: cancelled'); return true; }
     if (p.kind === 'quiz') { quizHear(p, n); return true; }
     if (p.kind === 'stop' && /^(yes|yeah|yep|do it|go ahead|confirm)\b/.test(n)) { clearTimeout(p.timer); vPend = null; voiceSend(p.s, null); return true; }
+    if (p.kind === 'batch' && /^(yes|yeah|yep|do it|go ahead|confirm)\b/.test(n)) { clearTimeout(p.timer); vPend = null; vCap(n, 'Going ahead.'); runBatch(p.list); return true; }
     return false;
   }
   function voiceSend(s, text) {
-    sessionSend(s.sessionId, text).then(r => {
+    return sessionSend(s.sessionId, text).then(r => {
       const what = text === null ? `Stopped ${s.title}.` : `Sent to ${s.title}.`;
       vCap('', r.ok ? what : `Not ${text === null ? 'stopped' : 'sent'}: ${r.why}`); vSay(r.ok ? what : `I couldn't ${text === null ? 'stop' : 'send'} that.`);
     });
@@ -1790,9 +1797,17 @@ if (gotLock) app.whenReady().then(() => {
   function voiceWait(text, n) {
     const m = n.match(/^(always allow|allow|deny|approve|accept|reject)( the)? (.+?)(?: (?:plan|session|request))?$/); if (!m) return false;
     const f = findSession(m[3].split(' '), true); if (!f) return false;
-    const verb = m[1], s = f.s, file = transcriptOf(s.sessionId), p = file && pendingNow(file);
+    const r = waitAction(f.s, m[1]);
+    if (r.no) { vCap(text, r.no); vSay(r.say); return true; }
+    log(`console voice: ${r.what}`);
+    voiceLater(text, r.what, r.what + '.', () => r.act().then(x => { vCap('', x.ok ? 'Done.' : `Not done: ${x.why}`); vSay(x.ok ? 'Done.' : "I couldn't do that."); }));
+    return true;
+  }
+  // what "allow / always allow / deny / approve / accept / reject" does for session s now -> { what, act } or { no: caption, say }
+  function waitAction(s, verb) {
+    const file = transcriptOf(s.sessionId), p = file && pendingNow(file);
     const plan = p && p.kind === 'plan', perm = p && p.kind === 'tool';
-    if (perm && awaitOf(s.sessionId) === false) { vCap(text, `${s.title} is running ${p.name}, not asking for permission.`); vSay('It is not asking for permission.'); return true; }
+    if (perm && awaitOf(s.sessionId) === false) return { no: `${s.title} is running ${p.name}, not asking for permission.`, say: 'It is not asking for permission.' };
     let what, act;
     if (plan && verb !== 'deny' && !/allow/.test(verb)) {
       const c = verb === 'reject' ? 'reject' : 'accept';
@@ -1801,26 +1816,27 @@ if (gotLock) app.whenReady().then(() => {
       const c = verb === 'always allow' ? 'Always allow' : verb === 'deny' || verb === 'reject' ? 'Deny' : 'Allow once';
       what = `${c === 'Allow once' ? 'Allow' : c} ${s.title}: ${p.name}${p.summary ? ' ' + String(p.summary).replace(/^Ran: /, '').slice(0, 80) : ''}`;
       act = () => sessionPermit(s.sessionId, c);
-    } else {
-      vCap(text, plan ? `${s.title} has a plan waiting: say approve or reject.` : `${s.title} is not waiting on ${/allow|deny/.test(verb) ? 'permission' : 'a plan'}.`);
-      vSay(plan ? 'That one has a plan. Say approve or reject.' : 'It is not waiting on that.'); return true;
-    }
-    log(`console voice: ${what}`);
-    voiceLater(text, what, what + '.', () => act().then(r => { vCap('', r.ok ? 'Done.' : `Not done: ${r.why}`); vSay(r.ok ? 'Done.' : "I couldn't do that."); }));
-    return true;
+    } else return { no: plan ? `${s.title} has a plan waiting: say approve or reject.` : `${s.title} is not waiting on ${/allow|deny/.test(verb) ? 'permission' : 'a plan'}.`,
+      say: plan ? 'That one has a plan. Say approve or reject.' : 'It is not waiting on that.' };
+    return { what, act };
   }
-  // "new session in <project> [to|that|:] <text>"; the project by its folder name ("my project" = My_Project)
+  // "[start / open / create …] [a] new session / task / chat [in|for|on <project> [to|that|:] <text>]": with a project and a task it
+  // starts at once; without, the New session form opens. The project by its folder name ("my project" = My_Project)
+  const NEW_RE = /^(?:(?:start|open|create|make|begin|launch|spin up|add)(?: up)? )?(?:a |an )?(?:(?:new|fresh|another) (?:session|task|chat|conversation|thread)|(?:session|task|chat|conversation))(?: (?:in|for|on) (.+))?$/;
   function voiceNew(text, n) {
-    const m = n.match(/^(start )?(a )?new session (in|for|on) (.+)$/); if (!m) return false;
-    const ws = m[4].split(' '), fl = folders();
+    const m = n.match(NEW_RE); if (!m) return false;
+    if (!/^(new|fresh|another|start|open|create|make|begin|launch|spin|add)\b/.test(n)) return false;   // "session" alone is no command
+    if (!settings.appControl) { vCap(text, 'Starting a session needs App control (General settings).'); vSay('That needs App control.'); return true; }
+    if (!m[1]) { voiceForm(text); return true; }
+    const ws = m[1].split(' '), fl = folders();
     let best = null;
     for (const fo of fl) { const t = norm(fo.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2')), tw = t.split(' ').length;
-      for (let k = Math.max(1, tw - 1); k <= Math.min(ws.length - 1, tw + 1); k++) { const sc = sim(ws.slice(0, k).join(' '), t); if (!best || sc > best.sc) best = { fo, k, sc }; } }
+      for (let k = Math.max(1, tw - 1); k <= Math.min(ws.length, tw + 1); k++) { const sc = sim(ws.slice(0, k).join(' '), t); if (!best || sc > best.sc) best = { fo, k, sc }; } }
     if (!best || best.sc < 0.75) { vCap(text, `Which project? ${fl.slice(0, 8).join(', ')}.`); vSay('Which project?'); return true; }
     // the message keeps the spoken words' case and punctuation: drop as many words from the raw text as the project used
     const raw = text.split(/\s+/).filter(x => norm(x)), at = raw.findIndex(x => /^(in|for|on)$/i.test(norm(x)));
     let rest = raw.slice(at + 1 + best.k); if (rest.length && /^(to|that)$/i.test(norm(rest[0]))) rest = rest.slice(1);
-    const msg = rest.join(' ').replace(/^[,.:;\s-]+/, '').trim(); if (!msg) return false;
+    const msg = rest.join(' ').replace(/^[,.:;\s-]+/, '').trim(); if (!msg) { voiceForm(text, best.fo); return true; }   // no task: the form
     const out = msg.charAt(0).toUpperCase() + msg.slice(1);
     log(`console voice: new session in ${best.fo} <- "${out}"`);
     voiceLater(text, `New session in ${best.fo}: ${out}`, `New session in ${best.fo}.`, () => sessionNew(best.fo, null, out).then(r => {
@@ -1828,34 +1844,72 @@ if (gotLock) app.whenReady().then(() => {
     }));
     return true;
   }
+  function voiceForm(text, folder) {
+    showWin(); toWin('voice-open', { sessionId: null, folder: folder || null }); vCap(text, folder ? `New session in ${folder}: say or type the task.` : 'New session: pick the project and type the task.');
+    vSay('New session.'); log('console voice: new session form' + (folder ? ' for ' + folder : ''));
+  }
+  // "open / show / go to / switch to <title> [session]": the tile's own press (its conversation in the wide card). A phrase about
+  // a session that names none is answered here, not by Ask
+  function voiceOpen(text, n) {
+    const m = n.match(/^(?:open|show(?: me)?|go to|go back to|switch to|bring up|pull up|jump to)(?: up)? (.+)$/); if (!m) return false;
+    // a short "<name> session" that names no session is answered here; anything longer ("the main file of X session") goes to Ask
+    let ws = m[1].split(' '); const named = /^(?:(?:a|an|my|the) )?(?:\S+ ){1,3}(?:session|task|chat)$/.test(m[1]);
+    if (/^(a|an|my)$/.test(ws[0])) ws = ws.slice(1);
+    if (ws.length > 1 && /^(session|task|chat)$/.test(ws[ws.length - 1])) ws = ws.slice(0, -1);
+    const f = ws.length && findSession(ws, true);
+    if (f) { showWin(); toWin('voice-open', { sessionId: f.s.sessionId }); vCap(text, `Opening ${f.s.title}.`); log(`console voice: open "${f.s.title}"`); return true; }
+    if (!named) return false;   // "open the pod bay doors" is a question
+    vCap(text, `No session called "${ws.join(' ')}". Say "open <title>", or "new session in <project>" and the task.`); vSay('I could not find that session.');
+    return true;
+  }
+  const showWin = () => { if (win && !win.isDestroyed() && !win.isVisible()) { win.showInactive(); sendToBottom(); syncBg(); } };
+  // the text of a session's last reply (code blocks and markdown marks out), '' when none
+  function lastReply(s) {
+    const file = transcriptOf(s.sessionId); let last = null;
+    if (file) try {
+      const size = fs.statSync(file).size, len = Math.min(size, 1 << 20), fd = fs.openSync(file, 'r'), b = Buffer.alloc(len);
+      fs.readSync(fd, b, 0, len, size - len); fs.closeSync(fd);
+      last = require('./transcript').parse(b.toString('utf8')).filter(x => x.role === 'assistant').pop();
+    } catch {}
+    return last ? last.text.replace(/```[\s\S]*?```/g, ' ').replace(/[*_`#>|]/g, '').trim() : '';
+  }
+  // "Stop <title>? Say yes." with 5 s to say it
+  function voiceStop(text, s) {
+    if (vPend) clearTimeout(vPend.timer);
+    const p = vPend = { kind: 'stop', s, timer: null };
+    vCap(text, `Stop ${s.title}? Say yes.`);
+    const go = () => { if (vPend !== p) return; p.timer = setTimeout(() => { if (vPend === p) { vPend = null; vCap('', 'Not stopped.'); } }, 5000); if (askOn()) audio.follow(5000).catch(() => {}); };
+    if (settings.askSpeak) say(`Stop ${s.title}?`).then(go); else go();
+  }
   async function voiceSession(text, n) {
+    // Whisper writes what it heard: "Okay, can you open …", "Opened a test session", "Starting a new session in …", "… please"
+    // (the same lead-in comes off the spoken text too, so its words line up with n's: "tell" counts words of both)
+    const LEAD = /^(okay|ok|please|hey|so|now|and|um|uh|can you|could you|would you|will you|i want to|i d like to|let s)\b ?/;
+    for (let k = 0; k < 3; k++) {
+      const m0 = n.match(LEAD); if (!m0 || !m0[0]) break;
+      n = n.slice(m0[0].length);
+      const ws = text.split(/\s+/).filter(x => x); let c = m0[1].split(' ').length;   // "Let's" is one spoken word, two of n's
+      while (c > 0 && ws.length) { const t = norm(ws.shift()); if (t) c -= t.split(' ').length; }
+      text = ws.join(' ');
+    }
+    n = n.replace(/ please$/, '').replace(/^(open|start|show|launch)(?:ed|ing|s)\b/, '$1').replace(/^(creat|mak)(?:ed|ing|es)\b/, '$1e').replace(/^(began|beginning)\b/, 'begin');
     const w = n.split(' '), raw = text.split(/\s+/).filter(x => norm(x));
     let m;
     if (w[0] === 'answer' && w.length >= 2 && voiceAnswer(text, w)) return true;
     if (/^(always allow|allow|deny|approve|accept|reject) /.test(n) && voiceWait(text, n)) return true;
-    if (/new session/.test(n) && voiceNew(text, n)) return true;
+    if (voiceNew(text, n)) return true;
+    if (voiceOpen(text, n)) return true;
     if ((m = n.match(/^what (did|has|does) (.+?) (say|said|says|replied|reply)$/))) {
       const f = findSession(m[2].split(' '), true); if (!f) return false;
-      const file = transcriptOf(f.s.sessionId); let last = null;
-      if (file) try {
-        const size = fs.statSync(file).size, len = Math.min(size, 1 << 20), fd = fs.openSync(file, 'r'), b = Buffer.alloc(len);
-        fs.readSync(fd, b, 0, len, size - len); fs.closeSync(fd);
-        last = require('./transcript').parse(b.toString('utf8')).filter(x => x.role === 'assistant').pop();
-      } catch {}
-      const t = last ? last.text.replace(/```[\s\S]*?```/g, ' ').replace(/[*_`#>|]/g, '') : '';
-      vCap(text, last ? `${f.s.title}: ${t.slice(0, 600)}` : `${f.s.title} has no reply yet.`);
-      if (settings.askSpeak && asker) say(last ? asker.spoken(t) : 'No reply yet.');
+      const t = lastReply(f.s);
+      vCap(text, t ? `${f.s.title}: ${t.slice(0, 600)}` : `${f.s.title} has no reply yet.`);
+      if (settings.askSpeak && asker) say(t ? asker.spoken(t) : 'No reply yet.');
       log(`console voice: read last reply of "${f.s.title}"`);
       return true;
     }
     if (w[0] === 'stop' && w.length >= 2) {
       const f = findSession(w.slice(1), true); if (!f) return false;
-      if (vPend) clearTimeout(vPend.timer);
-      const p = vPend = { kind: 'stop', s: f.s, timer: null };
-      vCap(text, `Stop ${f.s.title}? Say yes.`);
-      const go = () => { if (vPend !== p) return; p.timer = setTimeout(() => { if (vPend === p) { vPend = null; vCap('', 'Not stopped.'); } }, 5000); if (askOn()) audio.follow(5000).catch(() => {}); };
-      if (settings.askSpeak) say(`Stop ${f.s.title}?`).then(go); else go();
-      return true;
+      voiceStop(text, f.s); return true;
     }
     if (/^(tell|ask|message|send)$/.test(w[0]) && w.length >= 3) {
       const f = findSession(w.slice(1)); if (!f) return false;
@@ -1874,12 +1928,251 @@ if (gotLock) app.whenReady().then(() => {
     }
     return false;
   }
+  // ---- The sphere's tools (MCP: src/tooldefs.js lists them, src/mcp_sphere.js forwards each call here on 127.0.0.1) ----
+  // Two callers. Voice Ask's Claude Code call gets a fresh token per question (askCtx.token) and acts for the user: reading and
+  // harmless actions run at once; sending, starting, answering, permissions and stopping are queued and confirmed after Ask's
+  // reply (one: read back with 3 s to cancel, a stop needs "yes"; several: read back as a list, "yes" runs them in turn).
+  // The user's own sessions (the server registered with Claude Code) find the address and token in bridge.json: they can speak,
+  // show a caption, light their tile, read and search sessions, and message each other when the user allows it.
+  let askCtx = null;   // the question being answered: { token, q, queue: [{ what, spoken, act } | { stop: session }] }
+  const PC_ACTS = { system_status: 'status', mute_mic: 'muteMic', unmute_mic: 'unmuteMic', next_output: 'nextOut', next_mic: 'nextMic',
+    start_recording: 'recStart', stop_recording: 'recStop', save_replay: 'saveReplay', screenshot: 'screenshot' };
+  const RESP = { allow: 'allow', always_allow: 'always allow', deny: 'deny', approve_plan: 'approve', reject_plan: 'reject' };
+  // a session by its title: exact (any case), else the spoken-title match -> session, or throws with the titles to pick from
+  function sessOf(title) {
+    const all = (lastFeed.sessions || []).filter(s => s.title), t = String(title || '').trim().toLowerCase();
+    const ex = all.find(s => s.title.toLowerCase() === t); if (ex) return ex;
+    const ws = norm(title).split(' ').filter(Boolean), f = ws.length && (findSession(ws, true) || findSession(ws));
+    if (f) return f.s;
+    throw new Error(`No session called "${title}". Sessions: ${all.slice(0, 40).map(s => s.title).join('; ')}`);
+  }
+  // a project folder by name (spoken or written) -> its folder, or throws with the ones to pick from
+  function projectOf(name) {
+    const fl = folders(), t = norm(name);
+    const best = fl.map(fo => ({ fo, sc: sim(t, norm(fo.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'))) })).sort((a, b) => b.sc - a.sc)[0];
+    if (best && best.sc >= 0.75) return best.fo;
+    throw new Error(`No project "${name}". Projects: ${fl.join(', ') || 'none known'}`);
+  }
+  const pendingOfS = s => { const f = transcriptOf(s.sessionId), p = f && pendingNow(f); return p && p.kind === 'tool' && awaitOf(s.sessionId) === false ? null : p; };
+  function pendingText(p) {
+    if (!p) return 'nothing';
+    if (p.kind === 'ask') return 'a question: ' + p.questions.map((q, i) => `(${i + 1}) ${q.question}${q.multiSelect ? ' [one or more]' : ''} options: ${q.options.map(o => o.label).join(' | ')}`).join(' ');
+    if (p.kind === 'plan') return 'approval of its plan: ' + String(p.plan || '').replace(/\s+/g, ' ').slice(0, 1200);
+    return `permission to run ${p.name}${p.summary ? ': ' + String(p.summary).slice(0, 200) : ''}`;
+  }
+  function queue(l) {
+    if (!askCtx) throw new Error('no question is being answered');
+    if (askCtx.queue.length >= 6) throw new Error('At most 6 actions per request: tell the user to ask again for the rest.');
+    askCtx.queue.push(l);
+    return `Queued (${askCtx.queue.length}): the user confirms after your reply. Say briefly what you are about to do, not that it is done.`;
+  }
+  const done_ = (ok, yes, no) => { vCap('', ok ? yes : no); vSay(ok ? 'Done.' : "That didn't work."); };
+  // shared by both callers
+  const listSessions = () => JSON.stringify((lastFeed.sessions || []).filter(s => s.title).map(s => {
+    const p = s.activity === 'waiting' ? pendingOfS(s) : null, at = attn.get(String(s.sessionId));
+    return { title: s.title, group: s.group, folder: s.folder || undefined, activity: at ? 'waiting' : s.activity || undefined, contextUsed: s.pct != null ? Math.round(s.pct * 100) + '%' : undefined,
+      waitingFor: p ? pendingText(p).slice(0, 300) : at ? 'the user: ' + at.note : undefined };
+  }));
+  const readSession = a => { const s = sessOf(a.session); return JSON.stringify({ title: s.title, activity: s.activity, waitingFor: pendingText(pendingOfS(s)), lastReply: lastReply(s).slice(0, 3000) || 'none yet' }); };
+  async function searchSessions(a) {
+    const days = Number(a.days), list = [];
+    for (const s of lastFeed.sessions || []) { const id = s && String(s.sessionId); if (!id || !SID.test(id)) continue; const file = transcriptOf(id); if (file) list.push({ sessionId: id, title: s.title || '', file }); }
+    const r = await require('./search').search(list, String(a.text || '').slice(0, 200), { who: ['user', 'assistant'].includes(a.who) ? a.who : null, since: days > 0 ? Date.now() - days * 864e5 : 0 });
+    if (!r.ok) throw new Error(r.why);
+    return r.hits.length ? JSON.stringify(r.hits.slice(0, 15).map(h => ({ session: h.title, who: h.role === 'user' ? 'user' : 'Claude', when: h.ts, text: Array.isArray(h.snippet) ? h.snippet.join('') : h.snippet }))) : 'No hits.';
+  }
+  // record_until_idle: one watch at a time; stops when the session has worked and stopped, or after 30 min (3 min if it never starts)
+  let recWatch = null;
+  async function recordUntilIdle(s) {
+    if (!(rState && rState.recording)) await acts.recStart();
+    if (!(rState && rState.recording)) throw new Error('The recording did not start.');
+    if (recWatch) clearInterval(recWatch.t);
+    const t0 = Date.now(), w = recWatch = { t: 0, seen: false };
+    w.t = setInterval(async () => {
+      const cur = (lastFeed.sessions || []).find(x => x.sessionId === s.sessionId), act = cur && cur.activity, age = Date.now() - t0;
+      if (act === 'working') w.seen = true;
+      if (recWatch !== w) return clearInterval(w.t);
+      if (!((w.seen && act !== 'working') || age > 30 * 60000 || (!w.seen && age > 3 * 60000))) return;
+      clearInterval(w.t); recWatch = null;
+      if (rState && rState.recording) try { await acts.recStop(); log(`ask tool: recording of "${s.title}" stopped (${Math.round(age / 1000)} s)`); vCap('', `Recording of ${s.title} saved.`); } catch (e) { log('ask tool: recording stop failed: ' + (e && e.message)); }
+    }, 2000);
+  }
+  const ASK_RUN = {
+    list_sessions: listSessions, read_session: readSession, search_sessions: searchSessions,
+    open_session: a => { const s = sessOf(a.session); showWin(); toWin('voice-open', { sessionId: s.sessionId }); return `Opened ${s.title}.`; },
+    new_session_form: a => {
+      if (!settings.appControl) throw new Error('App control is off (General settings): sessions cannot be started.');
+      const fo = a.project ? projectOf(a.project) : null; showWin(); toWin('voice-open', { sessionId: null, folder: fo }); return 'The form is open' + (fo ? ` with ${fo} picked.` : '.');
+    },
+    open_file: async a => {
+      let file = String(a.file || '').trim(), dir = '';
+      if (!file) throw new Error('no file given');
+      if (a.session) { const s = sessOf(a.session), t = transcriptOf(s.sessionId); dir = t && require('./compose').cwdOf(t); if (!dir) throw new Error(`The folder of ${s.title} was not found.`); }
+      if (path.isAbsolute(file)) { const rel = dir ? path.relative(dir, file) : ''; if (dir && rel && !rel.startsWith('..') && !path.isAbsolute(rel)) file = rel; else { dir = path.dirname(file); file = path.basename(file); } }
+      if (!dir) throw new Error('Give the session the file belongs to, or a full path.');
+      const r = await require('./bridge').openFile(dir, file, a.line, settings.editor, settings.editorCmd, shell);
+      if (!r.ok) throw new Error(r.why); return 'Opened in the editor.';
+    },
+    ops_board: a => {
+      let rows; try { rows = JSON.parse(fs.readFileSync(OPS, 'utf8').replace(/^﻿/, '')); } catch { throw new Error('There is no ops board.'); }
+      if (a.set) rows = rows.filter(r => r.set === a.set);
+      return JSON.stringify(rows).slice(0, 12000) || 'Empty.';
+    },
+    record_until_idle: async a => { const s = sessOf(a.session); await recordUntilIdle(s); return `Recording now; it stops by itself when ${s.title} stops working.`; },
+    start_session: a => {
+      if (!settings.appControl) throw new Error('App control is off (General settings): sessions cannot be started.');
+      const fo = projectOf(a.project), task = String(a.task || '').trim(); if (!task) throw new Error('no task given');
+      return queue({ what: `New session in ${fo}: ${task}`, spoken: `New session in ${fo}.`, act: () => sessionNew(fo, null, task).then(r => done_(r.ok, `Started ${r.title} in ${fo}.`, `Not started: ${r.why}`)) });
+    },
+    send_message: a => {
+      const s = sessOf(a.session), t = String(a.text || '').trim(); if (!t) throw new Error('no text given');
+      return queue({ what: `To ${s.title}: ${t}`, spoken: `To ${s.title}.`, act: () => voiceSend(s, t) });
+    },
+    send_screenshot: a => {
+      const s = sessOf(a.session), t = String(a.text || '').trim();
+      return queue({ what: `Screenshot to ${s.title}${t ? ': ' + t : ''}`, spoken: `Screenshot to ${s.title}.`, act: async () => {
+        const f = await acts.screenshot(); if (!f) { done_(false, '', 'No screenshot was taken.'); return; }
+        const r = await sessionAttach(s.sessionId, [f], [], t); done_(r.ok, `Screenshot sent to ${s.title}.`, `Not sent: ${r.why}`);
+      } });
+    },
+    respond: a => {
+      const s = sessOf(a.session), v = RESP[a.response]; if (!v) throw new Error('response must be one of ' + Object.keys(RESP).join(', '));
+      const r = waitAction(s, v); if (r.no) throw new Error(r.no);
+      return queue({ what: r.what, spoken: r.what + '.', act: () => r.act().then(x => done_(x.ok, 'Done.', `Not done: ${x.why}`)) });
+    },
+    answer_question: a => {
+      const s = sessOf(a.session), file = transcriptOf(s.sessionId), p = file && pendingNow(file);
+      if (!p || p.kind !== 'ask') throw new Error(`${s.title} is not asking a question.`);
+      const ans = Array.isArray(a.answers) ? a.answers : [];
+      if (ans.length !== p.questions.length) throw new Error(`${s.title} asks ${p.questions.length} question(s): give one answer for each.`);
+      const picks = ans.map((x, i) => {
+        const q = p.questions[i], other = String(x && x.other || '').trim();
+        if (other) return { picks: [], other };
+        const ls = (x && Array.isArray(x.picks) ? x.picks : []).map(l => { const o = optsOf(q, norm(l)); if (!o) throw new Error(`No option "${l}" in question ${i + 1}: ${q.options.map(o => o.label).join(' | ')}`); return o[0].label; });
+        if (!ls.length || (!q.multiSelect && ls.length > 1)) throw new Error(`Question ${i + 1} needs ${q.multiSelect ? 'one or more options' : 'exactly one option'}.`);
+        return { picks: [...new Set(ls)], other: '' };
+      });
+      const sum = picks.map(x => x.other || x.picks.join(' and ')).join('; then ');
+      return queue({ what: `Answer ${s.title}: ${sum}`, spoken: `Answer ${s.title}: ${sum}.`, act: () => {
+        const now = pendingNow(file);
+        if (!now || now.id !== p.id) { vCap('', `${s.title} is not asking that any more.`); vSay('The question changed.'); return; }
+        return sessionAnswer(s.sessionId, picks).then(r => done_(r.ok, `Answered ${s.title}.`, `Not answered: ${r.why}`));
+      } });
+    },
+    stop_session: a => queue({ stop: sessOf(a.session) }),
+    pc: async a => { const c = PC_ACTS[a.action]; if (!c) throw new Error('unknown action'); const r = await runCommand({ cmd: c, text: '(ask)', confidence: 1, wake: true, quiet: true }); return c === 'status' ? r : 'Done.'; },
+    set_mode: async a => {
+      if (!MODES.includes(a.mode)) throw new Error('mode must be one of ' + MODES.join(', '));
+      await runCommand({ cmd: 'mode', arg: a.mode, text: '(ask)', confidence: 1, wake: true, quiet: true }); return `${T.MODE_NAMES[a.mode]} mode requested.`;
+    },
+  };
+  // the session tools: `me` = the calling session (by the ids Claude Code gives its MCP servers) or, off the sphere, its folder
+  const spokeAt = new Map();   // caller -> when it last spoke
+  function callerOf(h) {
+    const sid = String(h['x-sphere-session'] || ''), host = String(h['x-sphere-host'] || '');
+    const s = (sid || host) ? (lastFeed.sessions || []).find(x => x.sessionId && (x.sessionId === host || x.sessionId === sid || (x.transcript && path.basename(String(x.transcript), '.jsonl') === sid))) : null;
+    let cwd = ''; try { cwd = decodeURIComponent(String(h['x-sphere-cwd'] || '')); } catch {}
+    return { s: s || null, title: s ? s.title : cwd ? path.basename(cwd) : 'A session' };
+  }
+  const clip = (t, n = 300) => { t = String(t || '').replace(/\s+/g, ' ').trim(); if (!t) throw new Error('no text given'); return t.length > n ? t.slice(0, n) + '…' : t; };
+  const SESS_RUN = {
+    speak: (a, me) => {
+      const t = clip(a.text), k = me.s ? me.s.sessionId : me.title;
+      if (Date.now() - (spokeAt.get(k) || 0) < 8000) throw new Error('This session spoke a moment ago: wait a few seconds.');
+      spokeAt.set(k, Date.now());
+      vCap('', `${me.title}: ${t}`);
+      if (settings.sessionSpeak !== false) say(t);
+      return settings.sessionSpeak !== false ? 'Said.' : 'Shown as a caption (the user turned session speech off).';
+    },
+    caption: (a, me) => { vCap('', `${me.title}: ${clip(a.text)}`); return 'Shown.'; },
+    needs_you: (a, me) => {
+      if (!me.s) throw new Error('This session is not on the sphere.');
+      const note = clip(a.note, 120); attn.set(String(me.s.sessionId), { note, at: Date.now() }); feedOut();
+      vCap('', `${me.title} needs you: ${note}`); return 'The tile shows that this session needs the user.';
+    },
+    list_sessions: listSessions, read_session: readSession, search_sessions: searchSessions,
+    send_message: async (a, me) => {
+      if (!settings.sessionsMessage) throw new Error('The user has not allowed sessions to message each other (Theseus: Voice settings, "Sessions may message each other").');
+      const s = sessOf(a.session); if (me.s && s.sessionId === me.s.sessionId) throw new Error('That is this session.');
+      const t = String(a.text || '').trim(); if (!t) throw new Error('no text given');
+      const r = await sessionSend(s.sessionId, `[From ${me.title}] ${t}`); if (!r.ok) throw new Error(r.why);
+      vCap('', `${me.title} to ${s.title}: ${clip(t, 200)}`); return `Sent to ${s.title}.`;
+    },
+  };
+  const bridgeFile = path.join(app.getPath('userData'), 'bridge.json'), sessTok = require('crypto').randomBytes(18).toString('hex');
+  let bridgeP = null;
+  function actServer() {
+    if (bridgeP) return bridgeP;
+    const srv = require('http').createServer((rq, rs) => {
+      const out = (code, o) => { rs.writeHead(code, { 'content-type': 'application/json' }); rs.end(JSON.stringify(o)); };
+      const tok = rq.headers['x-sphere-token'];
+      const who = askCtx && tok === askCtx.token ? 'ask' : tok === sessTok ? 'session' : null;
+      if (!who) return out(403, { error: 'not now' });
+      if (who === 'session' && settings.sessionTools === false) return out(403, { error: 'The user turned the session tools off in Theseus.' });
+      if (rq.method !== 'POST' || rq.url !== '/call') return out(404, { error: 'no such route' });
+      let body = ''; rq.setEncoding('utf8');
+      rq.on('data', d => { body += d; if (body.length > 65536) rq.destroy(); });
+      rq.on('end', async () => {
+        let j; try { j = JSON.parse(body); } catch { return out(400, { error: 'bad JSON' }); }
+        const run = (who === 'ask' ? ASK_RUN : SESS_RUN)[j.name], args = j.arguments && typeof j.arguments === 'object' ? j.arguments : {};
+        if (typeof run !== 'function' || !Object.prototype.hasOwnProperty.call(who === 'ask' ? ASK_RUN : SESS_RUN, j.name)) return out(200, { isError: true, text: 'no such tool' });
+        const me = who === 'session' ? callerOf(rq.headers) : null, tag = `${who} tool${me ? ` (${me.title})` : ''}: ${j.name}`;
+        try { const text = await run(args, me); log(`${tag} ${JSON.stringify(args).slice(0, 200)}`); out(200, { text: String(text) }); }
+        catch (e) { log(`${tag} failed: ${e && e.message}`); out(200, { isError: true, text: String(e && e.message || e) }); }
+      });
+    });
+    bridgeP = new Promise((res, rej) => {
+      srv.once('error', e => { bridgeP = null; rej(e); });
+      srv.listen(0, '127.0.0.1', () => {
+        const url = `http://127.0.0.1:${srv.address().port}`;
+        try { fs.writeFileSync(bridgeFile, JSON.stringify({ url, token: sessTok, pid: process.pid })); } catch (e) { log('bridge.json: ' + e.message); }
+        res(url);
+      });
+    });
+    return bridgeP;
+  }
+  actServer().catch(e => log('tools bridge: ' + (e && e.message)));   // at start: a session may call any time
+  app.on('will-quit', () => { try { if (JSON.parse(fs.readFileSync(bridgeFile, 'utf8')).pid === process.pid) fs.unlinkSync(bridgeFile); } catch {} });
+  // the needs_you marks clear when the session works again (after 15 s) or after 2 hours; opening it clears it too (console-open)
+  function attnTidy() {
+    for (const [id, a] of attn) { const s = (lastFeed.sessions || []).find(x => String(x.sessionId) === id); if (!s || Date.now() - a.at > 2 * 3600000 || (s.activity === 'working' && Date.now() - a.at > 15000)) attn.delete(id); }
+  }
+  // Claude Code registration (user scope): every session then starts the server and gets the session tools
+  const mcpEntry = () => ({ type: 'stdio', command: process.execPath, args: [path.join(__dirname, 'mcp_sphere.js')], env: { ELECTRON_RUN_AS_NODE: '1', SPHERE_BRIDGE_FILE: bridgeFile } });
+  function mcpRegistered() { try { const j = JSON.parse(fs.readFileSync(P.claudeJson(), 'utf8')); return !!(j.mcpServers && j.mcpServers.theseus); } catch { return false; } }
+  function mcpRegister(on) {
+    const exe = asker && asker.findClaude(); if (!exe) return Promise.resolve({ ok: false, why: 'Claude Code was not found' });
+    const env = asker.cleanEnv(null); if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+    const args = on ? ['mcp', 'add-json', '--scope', 'user', 'theseus', JSON.stringify(mcpEntry())] : ['mcp', 'remove', '--scope', 'user', 'theseus'];
+    return new Promise(res => require('child_process').execFile(exe, args, { windowsHide: true, timeout: 30000, env }, (e, so, se) => {
+      log(`claude mcp ${on ? 'add' : 'remove'} theseus: ${e ? String(se || e.message).trim().slice(0, 200) : 'ok'}`);
+      res(e && mcpRegistered() !== on ? { ok: false, why: String(se || e.message).trim().slice(0, 200) } : { ok: true, on: mcpRegistered() });
+    }));
+  }
+  // after Ask's reply: the queued actions. One: read back, 3 s to cancel (a stop: "yes" within 5 s). Several: read back as a
+  // list; "yes" within 8 s runs them in turn
+  function runQueued(ctx) {
+    const q = ctx && ctx.queue; if (!q || !q.length) return;
+    if (q.length === 1) { const l = q[0]; if (l.stop) voiceStop(ctx.q, l.stop); else { log(`ask tool: queued "${l.what}"`); voiceLater(ctx.q, l.what, l.spoken, l.act); } return; }
+    if (vPend) clearTimeout(vPend.timer);
+    const p = vPend = { kind: 'batch', list: q, timer: null };
+    log(`ask tool: queued ${q.length}: ${q.map(l => l.stop ? 'stop ' + l.stop.title : l.what).join(' | ')}`);
+    vCap(ctx.q, `${q.length} actions. Say yes to go ahead:\n${q.map((l, i) => `${i + 1}. ${l.stop ? 'Stop ' + l.stop.title : l.what}`).join('\n')}`);
+    const go = () => { if (vPend !== p) return; p.timer = setTimeout(() => { if (vPend === p) { vPend = null; vCap('', 'Nothing done.'); } }, 8000); if (askOn()) audio.follow(8000).catch(() => {}); };
+    if (settings.askSpeak) say(`${q.length} actions. ${q.map(l => l.stop ? `Stop ${l.stop.title}.` : l.spoken).join(' ')} Say yes to go ahead.`).then(go); else go();
+  }
+  async function runBatch(list) {
+    for (const l of list) {
+      log(`ask tool: run "${l.stop ? 'stop ' + l.stop.title : l.what}"`);
+      try { await (l.stop ? voiceSend(l.stop, null) : l.act()); } catch (e) { log('ask tool: failed: ' + (e && e.message)); }
+    }
+  }
   async function onQuestion(q) {
-    const rm = () => fs.unlink(q.wav, () => {});
-    if (asking || !askOn()) { rm(); return; }
+    const rm = () => { if (q.wav) fs.unlink(q.wav, () => {}); };
+    if (asking || !(askOn() || q.test && asker)) { rm(); return; }   // q.test: a typed question from the test hook (no Whisper)
     asking = true; const t0 = Date.now();
     try {
-      let text; try { text = (await whisper.transcribe(q.wav)).text; } finally { rm(); }
+      let text; if (q.test) text = q.text; else try { text = (await whisper.transcribe(q.wav)).text; } finally { rm(); }
       text = String(text || '').replace(wakeRe(), '').trim();
       const n = norm(text);
       if (voicePending(n)) return;                                               // "cancel" / "yes" for a voice reply or stop
@@ -1889,9 +2182,12 @@ if (gotLock) app.whenReady().then(() => {
       if (hit) { log(`ask: "${text}" is a command`); runCommand({ cmd: hit[1], arg: hit[2], text, confidence: 1, wake: true }); return; }
       if (await voiceSession(text, n)) return;                                   // "tell X …", "what did X say", "stop X"
       toWin('ask', { state: 'thinking', q: text });
-      let r;
-      try { r = await asker.ask(text, { name: NAME(), snapshot: await askSnapshot(), opsFile: OPS, history: askHist, web: settings.askWeb, token: askToken(), onSlow: () => { if (settings.askSpeak) say('One moment.'); } }); }
+      let r, tools = null;
+      const ctx = askCtx = { token: require('crypto').randomBytes(18).toString('hex'), q: text, queue: [] };
+      if (settings.askActions) try { tools = { exec: process.execPath, script: path.join(__dirname, 'mcp_sphere.js'), url: await actServer(), token: ctx.token }; } catch (e) { log('ask tools unavailable: ' + (e && e.message)); }
+      try { r = await asker.ask(text, { name: NAME(), snapshot: await askSnapshot(), opsFile: OPS, history: askHist, web: settings.askWeb, token: askToken(), tools, onSlow: () => { if (settings.askSpeak) say('One moment.'); } }); }
       catch (e) {
+        if (ctx.queue.length) log(`ask tool: dropped ${ctx.queue.length} queued (no answer)`);
         log(`ask failed: "${text}" ${e.message} (${Date.now() - t0} ms)`);
         toWin('ask', { state: 'error', q: text, text: `I couldn't get an answer just now (${e.message}).` });
         if (settings.askSpeak) say("I couldn't get an answer just now.");
@@ -1900,11 +2196,12 @@ if (gotLock) app.whenReady().then(() => {
       const d = new Date().toDateString(); if (d !== askDay) { askDay = d; askCount = 0; }
       log(`ask #${++askCount} today: "${text}" -> ${r.model}${r.escalated ? ' (escalated)' : ''}${r.web ? ' +web' : ''}, claude ${r.ms} ms, total ${Date.now() - t0} ms`);
       askHist = [...askHist, { q: text, a: r.text }].slice(-2);
+      if (q.test) log('ask answer: ' + r.text);
       toWin('ask', { state: 'answer', q: text, text: r.text, spoken: settings.askSpeak });
-      const follow = () => { if (askOn()) audio.follow(8000).catch(() => {}); };   // a follow-up needs no wake word for 8 s
+      const follow = () => { if (ctx.queue.length) runQueued(ctx); else if (askOn()) audio.follow(8000).catch(() => {}); };   // a follow-up needs no wake word for 8 s
       if (settings.askSpeak) say(asker.spoken(r.text)).then(follow); else follow();
     } catch (e) { log('ask: ' + (e && e.message)); toWin('ask', { state: 'error', q: '', text: "I couldn't hear the question." }); }
-    finally { asking = false; }
+    finally { asking = false; askCtx = null; }
   }
   if (audio) {
     audio.on('question', q => { if (q && typeof q.wav === 'string') onQuestion(q); });
@@ -1913,6 +2210,12 @@ if (gotLock) app.whenReady().then(() => {
     askMode();
   }
   // sign-in for the answers: a token from `claude setup-token`, kept in the user folder (never in settings.json or the log)
+  // the sphere's MCP server in Claude Code: on (true) / off (false) / is it there (undefined) -> { ok, on, why }
+  ipcMain.handle('mcp-register', async (e, on) => {
+    if (!fromSettings(e)) return { ok: false, why: 'bad request' };
+    if (typeof on !== 'boolean') return { ok: true, on: mcpRegistered() };
+    return mcpRegister(on);
+  });
   ipcMain.handle('ask-token', (e, t) => {
     if (!fromSettings(e)) return null;
     if (typeof t === 'string') { t = t.trim(); try { if (t) fs.writeFileSync(tokenFile, t); else fs.unlinkSync(tokenFile); } catch {} }
@@ -1986,10 +2289,10 @@ if (gotLock) app.whenReady().then(() => {
   setInterval(() => { const k = JSON.stringify(P.addons()); if (k !== addonKey) { addonKey = k; pushSettings(); onSettingsChanged({ addons: true }); } }, 20000);
 
   // ---- test hooks: STRIP_SHOTS="<dir>;<count>;<ms apart>" pictures of the strip / toast / settings windows (first after 6 s);
-  // STRIP_SCRIPT="3000:muteMic,5000:voice:status,6000:voice:mode:worker,9000:ask:q1.wav" runs actions at those times (ask: a wave in %TEMP%SessionSphere; send:<sessionId>:<text> types into that session, SPHERE_SEND_OK=1 needed)
+  // STRIP_SCRIPT="3000:muteMic,5000:voice:status,6000:voice:mode:worker,9000:ask:q1.wav" runs actions at those times (ask: a wave in %TEMP%SessionSphere; askq:<text> a typed question; send:<sessionId>:<text> types into that session, SPHERE_SEND_OK=1 needed)
   if (process.env.STRIP_SCRIPT) for (const it of process.env.STRIP_SCRIPT.split(',')) {
     const [ms, kind, a, b] = it.split(':');
-    setTimeout(() => { if (kind === 'ask') { const s = path.join(app.getPath('temp'), 'SessionSphere', a), d = s + '.' + Date.now() + '.wav'; fs.copyFileSync(s, d); onQuestion({ wav: d }); } else if (kind === 'say') { const t = a, n = norm(t); log('say test: ' + t); if (!voicePending(n)) voiceSession(t, n).then(r => log('say test handled: ' + r)); } else if (kind === 'send') sessionSend(a, b || null).then(r => log('send test: ' + JSON.stringify(r))); else if (kind === 'js' && process.env.SPHERE_USERDATA) win.webContents.executeJavaScript(fs.readFileSync(path.join(process.env.SPHERE_USERDATA, a), 'utf8')).then(r => log('js test: ' + JSON.stringify(r)), e => log('js test failed: ' + e.message)); else if (kind === 'voice') runCommand({ cmd: a, arg: b, text: 'test', confidence: 1, wake: true }); else act(kind, a ? (isNaN(+a) ? a : +a) : undefined); }, +ms);
+    setTimeout(() => { if (kind === 'askq') onQuestion({ text: a, test: true }); else if (kind === 'ask') { const s = path.join(app.getPath('temp'), 'SessionSphere', a), d = s + '.' + Date.now() + '.wav'; fs.copyFileSync(s, d); onQuestion({ wav: d }); } else if (kind === 'say') { const t = a, n = norm(t); log('say test: ' + t); if (!voicePending(n)) voiceSession(t, n).then(r => log('say test handled: ' + r)); } else if (kind === 'send') sessionSend(a, b || null).then(r => log('send test: ' + JSON.stringify(r))); else if (kind === 'js' && process.env.SPHERE_USERDATA) win.webContents.executeJavaScript(fs.readFileSync(path.join(process.env.SPHERE_USERDATA, a), 'utf8')).then(r => log('js test: ' + JSON.stringify(r)), e => log('js test failed: ' + e.message)); else if (kind === 'voice') runCommand({ cmd: a, arg: b, text: 'test', confidence: 1, wake: true }); else act(kind, a ? (isNaN(+a) ? a : +a) : undefined); }, +ms);
   }
   if (process.env.STRIP_SHOTS) {
     const [dir, count = 1, ms = 1000] = process.env.STRIP_SHOTS.split(';'); let i = 0;
@@ -2007,7 +2310,7 @@ if (gotLock) app.whenReady().then(() => {
     setTimeout(shot, 6000);
   }
 
-  feed.watch(f => { lastFeed = f; cycleVoice(f); feedOut(); });
+  feed.watch(f => { lastFeed = f; attnTidy(); cycleVoice(f); feedOut(); });
   // the renderer may still be loading when the first state comes (a line already playing at start): it gets the last one once loaded
   let lastTalk = null;
   voice.watch(on => { lastTalk = on; if (win && !win.isDestroyed() && !win.webContents.isLoading()) win.webContents.send('talking', on); });

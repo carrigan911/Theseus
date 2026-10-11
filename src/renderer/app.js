@@ -244,9 +244,9 @@ function stepTile(dx, dy) {
 }
 function closeCard() { overlayOn = false; barCard = ''; rlist.style.display = 'none'; rlist.classList.remove('edit'); if (rEditing) { rEditing = false; keysOff(); } if (con.close()) keysOff(); window.sphere.overlayClose(); }
 // the console takes the wide card's place (no Claude window); the reply box needs the keyboard, so the window takes focus
-function openConsole(s, hit) {   // s null: the New session form alone; hit: a search hit to show
+function openConsole(s, hit, folder) {   // s null: the New session form alone (folder picked there); hit: a search hit to show
   if (overlayOn && !con.on) window.sphere.overlayClose();
-  overlayOn = true; barCard = ''; cardKind = 'wide'; rlist.style.display = 'none'; prevFor = null; prev.style.display = 'none'; if (s) { con.open(s, hit); con.feed(realFeed); } else con.openNew();
+  overlayOn = true; barCard = ''; cardKind = 'wide'; rlist.style.display = 'none'; prevFor = null; prev.style.display = 'none'; if (s) { con.open(s, hit); con.feed(realFeed); } else con.openNew(folder);
 }
 function openPress(name, kind) {
   if (con.close()) keysOff(); overlayOn = true; barCard = ''; cardKind = kind;
@@ -764,6 +764,12 @@ function caption(t) {
 }
 // Voice Ask: "You: <question>" while Claude thinks (the core breathes slowly), then the whole answer (the voice reads the first
 // sentences); it fades 4 s after the voice ends, or after 12 s when it is not spoken (errors: 6 s)
+// a voice "open <title>": as a press on that tile
+window.sphere.onVoiceOpen?.(a => {
+  if (!a) return;
+  if (a.sessionId == null) { openConsole(null, null, a.folder); return; }
+  const s = (realFeed.sessions || []).find(x => x.sessionId === a.sessionId); if (s) openTile(s, false, false);
+});
 window.sphere.onAsk?.(a => {
   if (!a) return;
   clearTimeout(capOff);

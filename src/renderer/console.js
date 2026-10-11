@@ -363,7 +363,7 @@ export function createConsole(host) {
 
   // New session form: replaces the conversation until Start or Cancel
   let formOn = false, formTok = 0, starting = false;
-  async function openForm() {
+  async function openForm(folder) {
     if (!cur) return;
     if (formOn) return closeForm(true);
     formOn = true; starting = false; const tok = ++formTok; root.classList.add('nw'); nt.value = ''; nwk.checked = false; nmsg.textContent = 'Loading folders…'; nf.replaceChildren(); startB.disabled = true;
@@ -374,7 +374,7 @@ export function createConsole(host) {
     const names = Array.isArray(fl) ? fl.filter(x => typeof x === 'string' && x) : [];
     if (ml.length) { const v = nm.value; nm.replaceChildren(...ml.map(n => Object.assign(el('option'), { textContent: n, value: n }))); nm.value = ml.includes(v) ? v : ml[0]; }
     nf.replaceChildren(...names.map(n => Object.assign(el('option'), { textContent: n, value: n })));
-    if (names.length) { nf.selectedIndex = 0; nmsg.textContent = ''; startB.disabled = false; } else nmsg.textContent = 'No folders found.';
+    if (names.length) { nf.selectedIndex = 0; if (typeof folder === 'string' && names.includes(folder)) nf.value = folder; nmsg.textContent = ''; startB.disabled = false; } else nmsg.textContent = 'No folders found.';
   }
   function closeForm(focus) {
     if (!formOn) return; formOn = false; formTok++; starting = false; root.classList.remove('nw');
@@ -874,11 +874,11 @@ export function createConsole(host) {
     window.sphere.consoleOpen(s.sessionId).then(r => { if (cur !== s) return; if (r && r.ok) { if (r.awaiting === true || r.awaiting === false) { aw = r.awaiting; schedTool(); } if (r.title && !s.title) title.textContent = s.title = r.title; if (r.link && !s.link) s.link = r.link; } if (!r || !r.ok) list.replaceChildren(Object.assign(document.createElement('div'), { className: 'empty', textContent: (r && r.why) || 'Could not open this session' })); }, () => {});
   }
   // the New session form with no conversation behind it (the "+ New session" tile); Cancel / Esc close the card
-  function openNew() {
+  function openNew(folder) {   // folder: picked in the form when it is there
     if (cur) close();
     cur = { sessionId: '', title: 'New session', blank: true }; held = []; at = new Map(); from = 0; key = ''; aw = null; setPending(null);
     title.textContent = 'New session'; why.textContent = ''; list.replaceChildren(); root.classList.add('blank'); root.style.display = 'flex';
-    host.needKeys(); openForm();
+    host.needKeys(); openForm(typeof folder === 'string' ? folder : '');
   }
   function close() {
     if (!cur) return false;

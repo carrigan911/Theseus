@@ -68,8 +68,10 @@ contextBridge.exposeInMainWorld('sphere', {
   onTools: cb => ipcRenderer.on('tools', (_e, t) => cb(t)),
   act: (name, arg) => ipcRenderer.invoke('tools-act', name, arg),                // nextOut, nextMic, muteMic, setVolume, recToggle, saveReplay, screenshot ...
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
+  mcpRegister: on => ipcRenderer.invoke('mcp-register', on),                    // the sphere's tools in Claude Code: true / false / undefined (ask) -> { ok, on, why }
   askToken: t => ipcRenderer.invoke('ask-token', t),                              // Voice Ask sign-in token: set (string, '' clears) / read (undefined) -> is one saved
   askTest: () => ipcRenderer.invoke('ask-test'),                                  // -> { ok, ms, text } or { ok: false, why }
+  onVoiceOpen: cb => ipcRenderer.on('voice-open', (_e, a) => cb(a)),           // { sessionId } (null: the New session form)
   onAsk: cb => ipcRenderer.on('ask', (_e, a) => cb(a)),                         // { state: thinking / answer / error, q, text }
   onNotice: cb => ipcRenderer.on('notice', (_e, text, ms) => cb(text, ms)),
   onLevels: cb => ipcRenderer.on('levels', (_e, l) => cb(l)),                    // strip meters: { mic, sys } 0..1 (null = not recorded), while recording
