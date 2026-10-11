@@ -30,6 +30,11 @@ const MAX_FILES = 400, MAX_DIFF = 3000;
 // a session folder since deleted or moved: said as such (a spawn in a missing folder fails with ENOENT, read as "no git")
 const gone = dir => { try { return !fs.statSync(dir).isDirectory(); } catch { return true; } };
 async function changes(dir) {
+  const c = await changesRead(dir);
+  recent.set(dir, { at: Date.now(), c }); if (recent.size > 40) recent.delete(recent.keys().next().value);
+  return c;
+}
+async function changesRead(dir) {
   if (gone(dir)) return { ok: false, why: 'the session folder was not found' };
   const top = await run('git', ['rev-parse', '--show-toplevel'], dir);
   if (!top.ok) return { ok: false, why: /not a git repository/i.test(top.err) ? 'not a git repository' : /ENOENT/.test(top.err) ? 'git is not installed' : top.err.trim().split('\n')[0] || 'git did not run' };
@@ -53,8 +58,14 @@ async function changes(dir) {
 }
 
 // one file's diff against HEAD -> { ok, lines: [[k, text]] } (k '+', '-', ' ', '@' for a hunk header); an untracked file is all '+'
+// the list just shown is reused for a few seconds (opening a file's diff right after the list costs one git call, not four)
+const recent = new Map();
+async function changesSoon(dir) {
+  const h = recent.get(dir); if (h && Date.now() - h.at < 5000) return h.c;
+  return changes(dir);
+}
 async function fileDiff(dir, file) {
-  const c = await changes(dir); if (!c.ok) return c;
+  const c = await changesSoon(dir); if (!c.ok) return c;
   const f = c.files.find(x => x.file === file); if (!f) return { ok: false, why: 'not among the changes' };
   if (f.untracked) {
     const p = path.join(c.root, file);
@@ -96,27 +107,44 @@ async function pr(dir) {
 
 // every line of a transcript that contains one of `keys` (plain string test first, so most lines are never parsed); read
 // 1 MB at a time with a pause between reads, so a big transcript never freezes the main process
-async function scan(file, keys, each) {
+async function scan(file, keys, each, want) {   // want(line): a last plain test before the line is parsed
   const fh = await fs.promises.open(file, 'r'), buf = Buffer.alloc(1 << 20), dec = new (require('string_decoder').StringDecoder)('utf8');   // a character split between reads stays whole
   let rest = '', pos = 0;
   try {
     for (;;) {
       const { bytesRead: n } = await fh.read(buf, 0, buf.length, pos); if (!n) break; pos += n;
       const t = rest + dec.write(buf.subarray(0, n)), ls = t.split('\n'); rest = ls.pop();
-      for (const l of ls) if (keys.some(k => l.includes(k))) { let j; try { j = JSON.parse(l); } catch { continue; } each(j, l); }
+      for (const l of ls) if (keys.some(k => l.includes(k)) && (!want || want(l))) { let j; try { j = JSON.parse(l); } catch { continue; } each(j, l); }
       await new Promise(r => setImmediate(r));
     }
     rest += dec.end();
-    if (rest && keys.some(k => rest.includes(k))) { try { each(JSON.parse(rest), rest); } catch {} }
+    if (rest && keys.some(k => rest.includes(k)) && (!want || want(rest))) { try { each(JSON.parse(rest), rest); } catch {} }
   } finally { await fh.close(); }
 }
 const blocks = j => (j && j.message && Array.isArray(j.message.content) ? j.message.content : []);
 const textOf = c => typeof c === 'string' ? c : Array.isArray(c) ? c.map(x => (x && x.type === 'text' ? x.text : '')).join('\n') : '';
 const short = (s, n = 160) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
-// background commands and agents -> { ok, tasks: [{ kind, text, at, state, id }] } newest first
+// background commands and agents -> { ok, tasks: [{ kind, text, at, state, id }] } newest first; the last answer per file is kept
+// until the file changes (the Tasks tab and the tile marker ask for the same file)
+const taskCache = new Map();
 async function tasks(file) {
+  let st; try { st = await fs.promises.stat(file); } catch { st = null; }
+  const ck = st ? st.size + ':' + st.mtimeMs : '', hit = taskCache.get(file);
+  if (hit && ck && hit.k === ck) return hit.r;
+  const r = await tasksRead(file);
+  if (ck) { taskCache.delete(file); taskCache.set(file, { k: ck, r }); if (taskCache.size > 40) taskCache.delete(taskCache.keys().next().value); }
+  return r;
+}
+async function tasksRead(file) {
   const byUse = new Map(), byTask = new Map(), list = [];
+  // a tool result is parsed only when it answers a task call (most lines of a transcript are tool results)
+  const want = l => {
+    if (!l.includes('"tool_result"') || l.includes('task-notification') || l.includes('run_in_background')) return true;
+    const re = /"tool_use_id":"([^"]+)"/g; let m;
+    while ((m = re.exec(l))) if (byUse.has(m[1])) return true;
+    return false;
+  };
   await scan(file, ['"run_in_background":true', '"name":"Agent"', '"name":"Task"', 'tool_result', 'task-notification', '"name":"TaskStop"'], j => {
     if (j.type === 'queue-operation' && typeof j.content === 'string') return note(j.content);
     if (j.type === 'attachment' && j.attachment && typeof j.attachment.prompt === 'string') return note(j.attachment.prompt);   // taken in mid-turn
@@ -133,7 +161,7 @@ async function tasks(file) {
       } else if (b.type === 'text' && b.text && b.text.includes('<task-notification>')) note(b.text);
     }
     if (j.type === 'user' && typeof (j.message && j.message.content) === 'string' && j.message.content.includes('<task-notification>')) note(j.message.content);
-  });
+  }, want);
   function note(s) {
     const re = /<task-notification>([\s\S]*?)<\/task-notification>/g; let m;
     while ((m = re.exec(s))) {

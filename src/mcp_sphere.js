@@ -22,7 +22,7 @@ function call(route, body) {
     const headers = { 'x-sphere-token': b.token, 'content-type': 'application/json', 'content-length': Buffer.byteLength(data),
       'x-sphere-session': process.env.CLAUDE_CODE_SESSION_ID || '', 'x-sphere-host': process.env.CLAUDE_CODE_HOST_SESSION_ID || '',
       'x-sphere-cwd': encodeURIComponent(process.cwd()) };
-    const rq = http.request(new URL(route, b.url), { method: body ? 'POST' : 'GET', headers, timeout: 30000 }, r => {
+    const rq = http.request(new URL(route, b.url), { method: body ? 'POST' : 'GET', headers, timeout: 90000 }, r => {
       let s = ''; r.setEncoding('utf8'); r.on('data', d => { s += d; });
       r.on('end', () => { try { const j = JSON.parse(s); r.statusCode === 200 ? res(j) : rej(new Error(j.error || 'HTTP ' + r.statusCode)); } catch { rej(new Error('bad reply from Theseus')); } });
     });

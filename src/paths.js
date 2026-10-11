@@ -7,16 +7,17 @@ const path = require('path');
 let get = () => ({});   // the live settings (main passes a getter, so a change is seen at once)
 const found = new Map();
 const videos = () => { try { return require('electron').app.getPath('videos'); } catch { return path.join(os.homedir(), 'Videos'); } };
-// an exe on PATH's absolute folders (never the current folder), cached
+// an exe on PATH's absolute folders (never the current folder), cached (a miss for a minute only: it may be installed meanwhile)
 function onPath(name) {
-  if (found.has(name)) return found.get(name);
+  const c = found.get(name);
+  if (c && (c.hit || Date.now() - c.at < 60000)) return c.hit;
   let hit = '';
   for (const d of String(process.env.PATH || '').split(path.delimiter)) {
     if (!d || !path.isAbsolute(d)) continue;
     const f = path.join(d, name);
     try { if (fs.statSync(f).isFile()) { hit = f; break; } } catch { try { if (fs.lstatSync(f).isSymbolicLink()) { hit = f; break; } } catch {} }   // an app alias (wt.exe in WindowsApps) only lstats
   }
-  found.set(name, hit); return hit;
+  found.set(name, { hit, at: Date.now() }); return hit;
 }
 // an add-on switched off (settings.addons[k] === false) reads as not set up
 const on = k => !(get().addons && get().addons[k] === false);

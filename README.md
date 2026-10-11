@@ -35,9 +35,12 @@ your PC. When you turn on App control, it can also press buttons in the Claude d
 ### Session management (off by default)
 Turn on **Manage sessions** under Theseus settings, and Theseus runs your sessions for you. It needs App control to
 type into sessions and to start or archive them. Without App control it only warns you.
-- **Fresh-session swaps:** when a session reaches its swap line (200k tokens, or 2 hours), Theseus asks it to update its
-  checkpoint and commit. A fresh session then continues from that checkpoint, and the old one is archived. You get 30 s
-  to say "cancel".
+- **Swaps:** when a session reaches its swap line (200k tokens, or 2 hours), Theseus asks it to update its checkpoint and
+  commit. You get 30 s to say "cancel". By default the session then **clears itself** and Theseus re-prompts it from the
+  checkpoint. The session keeps its title, group, model and Remote Control, and only one typed message is needed. The
+  other **Swap method** is "New session": a fresh session continues from the checkpoint, and the old one is archived.
+  Theseus falls back to it when a clear fails twice, and you can pick it for one swap with Queue → Swap to a new
+  session.
 - **Modes on a schedule:** Night (11 PM to 6:30 AM) and Weekend (Friday evening to Monday morning) start and end on their
   own. Each mode can send a message to your active sessions, such as "finish the current step, commit and stop".
 - **Parking and a queue:** park a session from its tile (right-click, Queue) or by voice ("park hand solver"). Parked

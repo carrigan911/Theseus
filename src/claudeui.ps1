@@ -141,9 +141,16 @@ function Press($e) {
   }
   # no pattern exposed: click its centre
   $r = $e.Current.BoundingRectangle; if ($r.Width -le 0) { return $false }
+  # only when that point shows a Claude window (its main window or one of its menus): behind another app the click would land there
+  $c = New-Object W.U+PT; $c.X = [int]($r.X + $r.Width / 2); $c.Y = [int]($r.Y + $r.Height / 2)
+  $h = Hwnd; if (-not $h) { return $false }
+  $at = [W.U]::GetAncestor([W.U]::WindowFromPoint($c), 2); $p1 = [uint32]0; $p2 = [uint32]0
+  if ($at -ne [IntPtr]::Zero) { [void][W.U]::GetWindowThreadProcessId2($at, [ref]$p1) }; [void][W.U]::GetWindowThreadProcessId2($h, [ref]$p2)
+  if ($at -eq [IntPtr]::Zero -or $p1 -ne $p2) { return $false }
   $pt = [Windows.Forms.Cursor]::Position
-  [Windows.Forms.Cursor]::Position = New-Object Drawing.Point([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2))
+  [Windows.Forms.Cursor]::Position = New-Object Drawing.Point($c.X, $c.Y)
   [W.U]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); [W.U]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 30   # mouse_event is queued: the cursor goes back only after the click is taken
   [Windows.Forms.Cursor]::Position = $pt
   $true
 }

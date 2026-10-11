@@ -39,7 +39,7 @@ const defaults = {
   outCycle: [], micCycle: [], strip: true, stripPos: null, sysReadout: false, sysAlerts: false, sysSpeak: false, voiceCmd: 'off', hotkeys: true,
   bgStyle: 'none', bgOpacity: 85, bgInTiles: false,          // background (Backgrounds_Spec): style, opacity %, also behind the spread rows
   // session management (SessionManagement_Spec): off by default; swaps at the line, modes + schedule, parking + queue
-  manageOn: false, manageSwaps: true, manageModes: true, manageQueue: true, manageOutsideOk: false, swapTokens: 200000, swapAgeMin: 120,
+  manageOn: false, manageSwaps: true, swapMethod: 'clear', manageModes: true, manageQueue: true, manageOutsideOk: false, swapTokens: 200000, swapAgeMin: 120,
   nightOn: true, nightFrom: '23:00', nightTo: '06:30', weekendOn: true, weekendFrom: '18:00', weekendTo: '06:30', queueAtNight: false, compactWindow: 300000,
   caps: { normal: 4, worker: 6, night: 1, weekend: 2, performance: 8, efficiency: 2 },
   modeMsgs: { normal: '', worker: '', night: 'Night mode: finish the current step, commit, update your checkpoint, then stop.',
@@ -67,7 +67,7 @@ const bl = v => typeof v === 'boolean' ? v : undefined;
 const en = (...a) => v => a.includes(v) ? v : undefined;
 const col = v => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v : undefined;
 const IDS = v => Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.length > 0 && x.length <= 200).slice(0, 60) : undefined;
-const PATH = v => typeof v === 'string' && /^([a-z]:[\\/]|\\\\)/i.test(v) && v.length <= 260 &&v.length <= 260 && !/[<>"|?*\x00-\x1f]/.test(v.replace(/^[a-z]:/i, '')) ? v : undefined;
+const PATH = v => typeof v === 'string' && /^([a-z]:[\\/]|\\\\)/i.test(v) && v.length <= 260 && !/[<>"|?*\x00-\x1f]/.test(v.replace(/^[a-z]:/i, '')) ? v : undefined;
 const PATHE = v => v === '' ? '' : PATH(v);   // a path setting that may be empty (not set up)
 const POS = v => v === null ? null : v && typeof v === 'object' && [v.x, v.y].every(n => typeof n === 'number' && isFinite(n)) ? { x: Math.round(Math.min(1e5, Math.max(-1e5, v.x))), y: Math.round(Math.min(1e5, Math.max(-1e5, v.y))) } : undefined;
 const REGION = v => v === null ? null : v && typeof v === 'object' && ['x', 'y', 'w', 'h'].every(k => typeof v[k] === 'number' && isFinite(v[k]) && Math.abs(v[k]) < 1e5) && v.w >= 32 && v.h >= 32 ? { x: Math.round(v.x), y: Math.round(v.y), w: Math.round(v.w), h: Math.round(v.h) } : undefined;
@@ -81,7 +81,7 @@ const RULES = {
   voiceCycleMgr: v => typeof v === 'string' && v.length <= 100 ? v : undefined, autostart: bl,
   sphereSize: en('small', 'medium', 'large', 'xlarge'), sphereGrowth: bl, emptySpots: en('tiles', 'open'), rowTileSize: en('large', 'medium', 'small'), tileAlign: en('left', 'center', 'right'), flatShape: en('regular', 'hexagon'), coreFollowsMode: bl, modeMotion: bl, spikeStrength: nm(0, 2),
   bgStyle: en('none', 'black', 'space', 'moving', 'gradient', 'travel'), bgOpacity: nm(0, 100), bgInTiles: bl,
-  manageOn: bl, manageSwaps: bl, manageModes: bl, manageQueue: bl, manageOutsideOk: bl, swapTokens: nm(50000, 1000000), swapAgeMin: nm(0, 1440),
+  manageOn: bl, manageSwaps: bl, swapMethod: en('clear', 'new'), manageModes: bl, manageQueue: bl, manageOutsideOk: bl, swapTokens: nm(50000, 1000000), swapAgeMin: nm(0, 1440),
   nightOn: bl, nightFrom: TIME, nightTo: TIME, weekendOn: bl, weekendFrom: TIME, weekendTo: TIME, queueAtNight: bl, compactWindow: nm(0, 1000000),
   outCycle: IDS, micCycle: IDS, strip: bl, stripPos: POS, sysReadout: bl, sysAlerts: bl, sysSpeak: bl, voiceCmd: en('off', 'ptt', 'wake', 'always'), hotkeys: bl,
   readerDays: nm(1, 60), recDir: PATHE, feedFile: PATHE, modeDir: PATHE, statusFile: PATHE, echoDir: PATHE, whisperPy: PATHE, ffmpeg: PATHE, transcriptsRoot: PATHE,
@@ -119,7 +119,7 @@ function loadSettings() {
   if (!settings.pathsVersion) {
     let own = null;
     if (!process.env.SPHERE_NO_PERSONAL) try { own = clean(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'personal.settings.json'), 'utf8'))); } catch {}
-    if (own) for (const [k, v] of Object.entries(own)) if (k !== '//' && (k !== 'recDir' || !settings.recDir)) settings[k] = v;
+    if (own) { delete own['//']; if (settings.recDir) delete own.recDir; settings = merge(settings, own); }   // merge: a partial caps / modeColors keeps the other keys
     settings.pathsVersion = 1; saveSettings();
   }
 }
@@ -155,7 +155,7 @@ function speak(line, done) {   // done: after the line has played (or failed)
   }
   if (!P.voiceExt()) {
     if (!builtin) builtin = require('./speech').create({ state: P.builtinVoice() });
-    builtin.say(line, { speed: settings.voiceSpeed }).then(() => { if (done) done(); });
+    builtin.say(line, { speed: settings.voiceSpeed }).catch(() => {}).then(() => { if (done) done(); });
     return;
   }
   const c = execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(P.echo(), 'speak.ps1'), line, '-Voice', settings.voice, '-Speed', String(settings.voiceSpeed)], { windowsHide: true }, () => { speaking.delete(c); if (done) done(); });
@@ -218,6 +218,16 @@ function openLink(link) {
   const stub = path.join(process.env.LOCALAPPDATA || '', 'AnthropicClaude', 'claude.exe');
   shell.openExternal(link).catch(() => execFile(stub, [link], { windowsHide: true }, () => {}));
 }
+// bytes [from, from + max) of a file as text ('' when gone); the file is always closed. tail: from = size - max
+function readSpan(file, from, max, tail) {
+  let fd; try {
+    fd = fs.openSync(file, 'r'); const size = fs.fstatSync(fd).size;
+    if (tail) from = Math.max(0, size - max);
+    const len = Math.max(0, Math.min(size - from, max)); if (!len) return '';
+    const b = Buffer.alloc(len), n = fs.readSync(fd, b, 0, len, from); return b.toString('utf8', 0, n);
+  } catch { return ''; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+}
+const sizeOf = f => { try { return fs.statSync(f).size; } catch { return 0; } };
 // write to a temp file and rename over (a crash mid-write can no longer reset everything); the last good file is kept as .bak
 function writeAtomic(file, data, bak) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -226,8 +236,9 @@ function writeAtomic(file, data, bak) {
   fs.renameSync(file + '.tmp', file);
 }
 let saveT = null;
-function saveSettings() { clearTimeout(saveT); saveT = setTimeout(flushSettings, 300); }     // debounced: a slider drag is one write
-function flushSettings() { clearTimeout(saveT); saveT = null; try { writeAtomic(settingsPath, JSON.stringify(settings, null, 2), true); } catch {} }
+let saveTries = 0;   // a failed write is tried again 5 times, 5 s apart (a locked file), then waits for the next change
+function saveSettings() { saveTries = 0; clearTimeout(saveT); saveT = setTimeout(flushSettings, 300); }     // debounced: a slider drag is one write
+function flushSettings() { clearTimeout(saveT); saveT = null; try { writeAtomic(settingsPath, JSON.stringify(settings, null, 2), true); } catch { if (++saveTries <= 5) saveT = setTimeout(flushSettings, 5000); } }
 // what the pages get: the settings plus the add-ons' live state (live: { k: { on, found } })
 // a personal copy (personal.settings.json beside the app) shows its add-ons in settings; the public install does not
 const PERSONAL = !process.env.SPHERE_NO_PERSONAL && fs.existsSync(path.join(__dirname, '..', 'personal.settings.json'));
@@ -445,6 +456,7 @@ if (gotLock) app.whenReady().then(() => {
       log(`mode ${m} requested (test instance: not sent)`);
       return getMode();
     }
+    if (!P.modeDir()) { log(`mode ${m} requested, but there is no mode folder (Modes add-on off)`); return getMode(); }
     if (MODES.includes(m) && !(m === readMode('editor_limits.json') && !readMode('mode_request.json'))) {
       const f = path.join(P.modeDir(), 'mode_request.json'), at = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19);
       // test runs (SPHERE_TEST=1 or SPHERE_DEBUG=1) mark the request so Theseus switches without messaging the sessions
@@ -512,7 +524,7 @@ if (gotLock) app.whenReady().then(() => {
     } catch {} finally { occBusy = false; }
   }, 1000);
   ipcMain.handle('cursor', e => { if (!fromWin(e)) return null; const p = screen.getCursorScreenPoint(), b = win.getContentBounds(); return { x: p.x - b.x, y: p.y - b.y }; });
-  ipcMain.handle('feed', e => fromWin(e) ? lastFeed : null);
+  ipcMain.handle('feed', e => fromWin(e) ? feedView() : null);
   // only Claude app session links are opened
   ipcMain.on('open', (e, link) => { if (!fromWin(e)) return; if (process.env.SPHERE_DEBUG) console.log('open', link); if (typeof link === 'string' && LINK.test(link)) openLink(link); });
   // ---- Claude window over the background: lists for the top groups, button presses, overlay placement ----
@@ -521,7 +533,8 @@ if (gotLock) app.whenReady().then(() => {
   const listsPath = path.join(app.getPath('userData'), 'claude_lists.json');
   try { Object.assign(cstate, JSON.parse(fs.readFileSync(listsPath, 'utf8'))); } catch {}
   let peeked = 0;
-  const saveLists = () => { try { writeAtomic(listsPath, JSON.stringify({ nav: cstate.nav, routines: cstate.routines, pinned: cstate.pinned, artifacts: cstate.artifacts })); } catch {} };
+  let listsSaved = '';
+  const saveLists = () => { const j = JSON.stringify({ nav: cstate.nav, routines: cstate.routines, pinned: cstate.pinned, artifacts: cstate.artifacts }); if (j === listsSaved) return; try { writeAtomic(listsPath, j); listsSaved = j; } catch {} };
   // the Artifacts page lists the artifacts (only while it is open in the card): new names first, the rest kept
   async function readArtifacts() {
     if (!overlay) return;
@@ -705,9 +718,8 @@ if (gotLock) app.whenReady().then(() => {
     for (let i = 0; i < 12; i++) {
       await new Promise(r => setTimeout(r, 500));
       try {
-        const size = fs.statSync(file).size; if (size <= from) continue;
-        const fd = fs.openSync(file, 'r'), b = Buffer.alloc(Math.min(size - from, 4 << 20)); fs.readSync(fd, b, 0, b.length, from); fs.closeSync(fd);
-        for (const l of b.toString('utf8').split('\n')) {
+        const t = readSpan(file, from, 4 << 20); if (!t) continue;
+        for (const l of t.split('\n')) {
           if (!l.includes('"user"') && !l.includes('"queue-operation"')) continue;
           let j; try { j = JSON.parse(l); } catch { continue; }
           const c = j.message && j.message.content, t = typeof c === 'string' ? c : Array.isArray(c) ? c.map(x => x && x.text || '').join(' ') : '';
@@ -723,7 +735,7 @@ if (gotLock) app.whenReady().then(() => {
   function sessionSend(sessionId, text) {
     const run = async () => {
       const s = sessFor(sessionId), no = refuse(s); if (no) return no;
-      const file = transcriptOf(sessionId), from = file ? fs.statSync(file).size : 0;
+      const file = transcriptOf(sessionId), from = file ? sizeOf(file) : 0;
       const cmd = { cmd: 'send', title: s.title, link: linkOf(s) };
       if (text === null) cmd.stop = true; else cmd.text = text;
       const r = await claudeUi.send(cmd, 30000);
@@ -765,8 +777,8 @@ if (gotLock) app.whenReady().then(() => {
       for (const f of names) {
         const p = path.join(rw.dir, f); let st; try { st = fs.statSync(p); } catch { continue; }
         if (st.birthtimeMs < rw.at - 2000) continue;
-        try { const len = Math.min(st.size, 1 << 20), fd = fs.openSync(p, 'r'), b = Buffer.alloc(len); fs.readSync(fd, b, 0, len, st.size - len); fs.closeSync(fd); if (!b.toString('utf8').includes(key)) continue; } catch { continue; }
-        rewound.delete(sessionId); moved.set(sessionId, p);
+        if (!readSpan(p, 0, 1 << 20, true).includes(key)) continue;
+        rewound.delete(sessionId); moved.set(sessionId, p); if (mgr) mgr.moved(sessionId, p);
         log(`console rewind: "${(sessFor(sessionId) || {}).title}" continues in ${f}`);
         if (conId === sessionId && win && !win.isDestroyed()) {   // the open console reads the new file from the start
           if (conRd) conRd.close();
@@ -790,9 +802,7 @@ if (gotLock) app.whenReady().then(() => {
   // the last ~1 MB of a transcript -> what the session waits on (transcript.pendingOf)
   function pendingNow(file) {
     try {
-      const size = fs.statSync(file).size, len = Math.min(size, 1 << 20), fd = fs.openSync(file, 'r'), b = Buffer.alloc(len);
-      fs.readSync(fd, b, 0, len, size - len); fs.closeSync(fd);
-      return require('./transcript').pending(b.toString('utf8'));
+      return require('./transcript').pending(readSpan(file, 0, 1 << 20, true));
     } catch { return null; }
   }
   // has the tool call `id` got its result since byte `from`? (polls up to 6 s)
@@ -801,9 +811,7 @@ if (gotLock) app.whenReady().then(() => {
     for (let i = 0; i < 12; i++) {
       await new Promise(r => setTimeout(r, 500));
       try {
-        const size = fs.statSync(file).size; if (size <= from) continue;
-        const fd = fs.openSync(file, 'r'), b = Buffer.alloc(Math.min(size - from, 4 << 20)); fs.readSync(fd, b, 0, b.length, from); fs.closeSync(fd);
-        if (b.toString('utf8').includes(key)) return true;
+        if (readSpan(file, from, 4 << 20).includes(key)) return true;
       } catch {}
     }
     return false;
@@ -823,7 +831,7 @@ if (gotLock) app.whenReady().then(() => {
         if (!other && (!picks.length || picks.some(x => !x) || (!q.multiSelect && picks.length > 1))) return { ok: false, why: `pick an option for "${q.header || q.question}"` };
         out.push({ picks, other, multi: q.multiSelect });
       }
-      const from = fs.statSync(file).size;
+      const from = sizeOf(file);
       const r = await claudeUi.send({ cmd: 'answer', title: s.title, link: linkOf(s), answers: out }, 40000);
       log(`console answer "${s.title}": ${r.ok ? 'ok' : r.why}`);
       if (!r.ok) return { ok: false, why: r.why };
@@ -851,7 +859,7 @@ if (gotLock) app.whenReady().then(() => {
       const p = pendingNow(file);
       if (!p || p.kind !== 'plan') return { ok: false, why: 'it is not waiting on a plan now' };
       if (choice === 'revise' && !String(text || '').trim()) return { ok: false, why: 'say what to change' };
-      const from = fs.statSync(file).size;
+      const from = sizeOf(file);
       const r = await claudeUi.send({ cmd: 'plan', title: s.title, link: linkOf(s), choice, text: String(text || '') }, 30000);
       log(`console plan "${s.title}" ${choice}: ${r.ok ? 'ok' : r.why}`);
       if (!r.ok) return { ok: false, why: r.why };
@@ -861,14 +869,16 @@ if (gotLock) app.whenReady().then(() => {
     return (sendQ = sendQ.then(run, run));
   }
   // the newest transcript written since t0 whose user lines hold `text` (polls up to 10 s)
+  // does the first 1 MB of `file` hold `key`?
+  const headHas = (file, key) => readSpan(file, 0, 1 << 20).includes(key);
   async function findNewTranscript(t0, text) {
     const root = P.transcripts(), key = rawKey(text);
     for (let i = 0; i < 20; i++) {
       await new Promise(r => setTimeout(r, 500));
       const c = [];
-      try { for (const d of fs.readdirSync(root)) { let fs2; try { fs2 = fs.readdirSync(path.join(root, d)); } catch { continue; }
+      try { for (const d of fs.readdirSync(root)) { let fs2; try { if (fs.statSync(path.join(root, d)).mtimeMs < t0 - 2000) continue; fs2 = fs.readdirSync(path.join(root, d)); } catch { continue; }   // a new file bumps its folder's time
         for (const f of fs2) if (f.endsWith('.jsonl')) { const p = path.join(root, d, f); try { const st = fs.statSync(p); if (st.mtimeMs >= t0 - 2000 && st.birthtimeMs >= t0 - 60000) c.push([st.mtimeMs, p]); } catch {} } } } catch {}
-      for (const [, p] of c.sort((a, b) => b[0] - a[0])) { try { if (fs.readFileSync(p, 'utf8').slice(0, 1 << 20).includes(key)) return p; } catch {} }
+      for (const [, p] of c.sort((a, b) => b[0] - a[0])) if (headHas(p, key)) return p;
     }
     return null;
   }
@@ -882,9 +892,7 @@ if (gotLock) app.whenReady().then(() => {
   // the mode on the last message sent (transcript "permissionMode") and when -> { mode, at } or null
   function modeOf(file) {
     try {
-      const size = fs.statSync(file).size, len = Math.min(size, 1 << 20), fd = fs.openSync(file, 'r'), b = Buffer.alloc(len);
-      fs.readSync(fd, b, 0, len, size - len); fs.closeSync(fd);
-      const t = b.toString('utf8'), i = t.lastIndexOf('"permissionMode":"'); if (i < 0) return null;
+      const t = readSpan(file, 0, 1 << 20, true), i = t.lastIndexOf('"permissionMode":"'); if (i < 0) return null;
       const m = /^"permissionMode":"(\w+)"/.exec(t.slice(i)), ln = t.slice(t.lastIndexOf('\n', i) + 1, t.indexOf('\n', i) < 0 ? t.length : t.indexOf('\n', i));
       const ts = /"timestamp":"([^"]+)"/.exec(ln);
       return m && MODE_OF[m[1]] ? { mode: MODE_OF[m[1]], at: ts ? Date.parse(ts[1]) || 0 : 0 } : null;
@@ -934,7 +942,7 @@ if (gotLock) app.whenReady().then(() => {
       const s = sessFor(sessionId), no = refuse(s); if (no) return no;
       const dir = path.join(app.getPath('temp'), 'SessionSphere'), tmp = [];
       try { fs.mkdirSync(dir, { recursive: true }); pngs.forEach((b, i) => { const f = path.join(dir, `paste_${Date.now()}_${i}.png`); fs.writeFileSync(f, b); tmp.push(f); }); } catch (e) { return { ok: false, why: 'cannot save the pasted image' }; }
-      const file = transcriptOf(sessionId), from = file ? fs.statSync(file).size : 0;
+      const file = transcriptOf(sessionId), from = file ? sizeOf(file) : 0;
       const r = await claudeUi.send({ cmd: 'attach', title: s.title, link: linkOf(s), files: [...paths, ...tmp], text }, 60000);
       log(`console attach "${s.title}" (${paths.length + tmp.length} file(s)): ${r.ok ? 'ok' : r.why}`);
       setTimeout(() => tmp.forEach(f => fs.unlink(f, () => {})), 60000);
@@ -986,6 +994,7 @@ if (gotLock) app.whenReady().then(() => {
       if (want.length) {
         awAt = Date.now();
         const r = await claudeUi.send({ cmd: 'status' }, 5000).catch(() => null);
+        if (!r || (!r.ok && r.why !== 'hidden' && r.why !== 'Claude is not running')) return;   // a timeout or a failed read: keep what we knew (a closed app waits on nothing)
         // the Claude app in the tray: its sidebar statuses freeze, so say once per opened conversation that requests show as Running
         if (r && r.why === 'hidden' && conId && want.includes(conId) && trayNoted !== conId && win && !win.isDestroyed()) {
           trayNoted = conId; win.webContents.send('console-note', { sessionId: conId, text: 'The Claude app is in the tray: permission requests show as Running until it is opened.' });
@@ -1011,6 +1020,21 @@ if (gotLock) app.whenReady().then(() => {
   // drafts (see draft-get below): read here, since feedOut marks them
   const draftsPath = path.join(app.getPath('userData'), 'drafts.json'), draftDir = path.join(app.getPath('userData'), 'drafts');
   let drafts = {}; try { drafts = JSON.parse(fs.readFileSync(draftsPath, 'utf8')) || {}; } catch {}
+  const BG_KEYS = ['run_in_background', '"name":"Agent"', '"name":"Task"', 'task-notification', 'TaskStop', 'Command running in background', 'Async agent launched'];
+  // does any of `keys` appear in `file` after byte `from`?
+  function tailHas(file, from, keys) {
+    const size = sizeOf(file); if (size <= from) return false;
+    const t = readSpan(file, from, size - from); return !t || keys.some(k => t.includes(k));
+  }
+  // the end of the last whole line at or before `size` (a half-written line is looked at again once it is whole)
+  function lineEnd(file, size, prev) {   // prev: the last start, kept when the last 1 MB is all one line
+    const n = Math.min(size, 1 << 20); if (!n) return size;
+    let fd; try {
+      fd = fs.openSync(file, 'r'); const b = Buffer.alloc(n), got = fs.readSync(fd, b, 0, n, size - n);
+      const i = b.subarray(0, got).lastIndexOf(10); return got < n ? size : i < 0 ? (prev >= 0 && prev <= size ? prev : size) : size - n + i + 1;   // bytes, so a split character cannot shift it
+    } catch { return size; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+  }
+
   async function bgScan() {
     if (bgBusy || !lastFeed || !Array.isArray(lastFeed.sessions)) return;
     bgBusy = true; let changed = false;
@@ -1021,20 +1045,32 @@ if (gotLock) app.whenReady().then(() => {
         const file = transcriptOf(id); if (!file) continue;
         let st; try { st = fs.statSync(file); } catch { continue; }
         if (now - st.mtimeMs > 6 * 3600e3) continue;
-        live.add(id); const k = st.mtimeMs + ':' + st.size;
-        if (bgSeen.get(id) === k) continue;
-        bgSeen.set(id, k);
-        let n = 0; try { const r = await require('./repo').tasks(file); n = r && r.ok ? r.tasks.filter(t => t.state === 'running').length : 0; } catch {}
+        live.add(id);
+        const seen = bgSeen.get(id);
+        if (seen && seen.file === file && seen.stat === st.size) continue;
+        bgSeen.set(id, { file, stat: st.size, size: lineEnd(file, st.size, seen && seen.file === file ? seen.size : -1), run: seen && seen.file === file ? seen.run : [] });   // size: where the next look starts (a whole line)
+        // only new lines that start, end or stop a task change the count: skip the full read when the tail has none
+        // (a running task ends with a plain tool result that names its call id)
+        if (seen && seen.file === file && st.size > seen.size && st.size - seen.size < 8 << 20 && !tailHas(file, seen.size, BG_KEYS.concat(seen.run || []))) continue;
+        let n = 0; try {
+          const r = await require('./repo').tasks(file), run = r && r.ok ? r.tasks.filter(t => t.state === 'running') : [];
+          n = run.length; bgSeen.get(id).run = run.map(t => t.id).filter(Boolean);
+        } catch {}
         if ((bgOf.get(id) || 0) !== n) { changed = true; if (n) bgOf.set(id, n); else bgOf.delete(id); }
       }
       for (const id of [...bgOf.keys()]) if (!live.has(id)) { bgOf.delete(id); changed = true; }
+      for (const id of [...bgSeen.keys()]) if (!live.has(id)) bgSeen.delete(id);
     } finally { bgBusy = false; }
     if (changed) feedOut();
   }
   setInterval(bgScan, 5000);
   function feedOut() {
     if (!win || win.isDestroyed()) return;
-    const f = lastFeed; if (!f || !Array.isArray(f.sessions)) return;
+    const v = feedView(); if (v) win.webContents.send('feed', v);
+  }
+  // the feed with the main process's marks: waiting on a permission, background tasks, a draft, a session asking for you
+  function feedView() {
+    const f = lastFeed; if (!f || !Array.isArray(f.sessions)) return f;
     const more = s => {
       let o = s; if (awaiting.get(s.sessionId) === true && s.activity !== 'waiting') o = { ...o, activity: 'waiting' };
       const b = bgOf.get(String(s.sessionId)); if (b) o = { ...o, bg: b };
@@ -1042,7 +1078,7 @@ if (gotLock) app.whenReady().then(() => {
       const at = attn.get(String(s.sessionId)); if (at) o = { ...o, activity: 'waiting', note: at.note };
       return o;
     };
-    win.webContents.send('feed', awaiting.size || bgOf.size || attn.size || Object.keys(drafts).length ? { ...f, sessions: f.sessions.map(more) } : f);
+    return awaiting.size || bgOf.size || attn.size || Object.keys(drafts).length ? { ...f, sessions: f.sessions.map(more) } : f;
   }
   const conStop = () => { if (conRd) conRd.close(); conRd = conId = null; };
   const SID = /^(new:)?[\w-]{1,80}$/;
@@ -1238,14 +1274,19 @@ if (gotLock) app.whenReady().then(() => {
   // ---- drafts (new ideas 1): each session's unsent reply and its attachments, kept until sent or emptied; on disk in
   // userData/drafts.json, a pasted picture as userData/drafts/<session>/<name>.png. The feed marks those sessions draft: true ----
   const dirOf = id => path.join(draftDir, id.replace(/[^\w-]/g, '_'));
-  const saveDrafts = () => { try { fs.writeFileSync(draftsPath, JSON.stringify(drafts)); } catch (err) { log('drafts not saved: ' + err.message); } };
-  // files no longer in the draft go a minute later (a reply just sent may still be reading them)
-  const sweep = id => setTimeout(() => {
+  let draftT = null;
+  const flushDrafts = () => { clearTimeout(draftT); draftT = null; try { writeAtomic(draftsPath, JSON.stringify(drafts)); } catch (err) { log('drafts not saved: ' + err.message); } };
+  const saveDrafts = () => { clearTimeout(draftT); draftT = setTimeout(flushDrafts, 500); };   // typing is one write
+  app.on('will-quit', () => { if (draftT) flushDrafts(); });
+  // files no longer in the draft go a minute later (a reply just sent may still be reading them); one timer per draft
+  const sweepT = new Map();
+  const sweep = id => { clearTimeout(sweepT.get(id)); sweepT.set(id, setTimeout(() => {
+    sweepT.delete(id);
     const d = dirOf(id), keep = new Set(((drafts[id] || {}).atts || []).map(a => a.path));
     let names = []; try { names = fs.readdirSync(d); } catch { return; }
     for (const n of names) if (!keep.has(path.join(d, n))) try { fs.unlinkSync(path.join(d, n)); } catch {}
     try { if (!fs.readdirSync(d).length) fs.rmdirSync(d); } catch {}
-  }, 60000);
+  }, 60000)); };
   setTimeout(() => {   // at start: pictures left by drafts that went while the app was closing
     const keep = new Set(Object.values(drafts).flatMap(d => (d.atts || []).map(a => a.path)));
     let dirs = []; try { dirs = fs.readdirSync(draftDir); } catch { return; }
@@ -1761,9 +1802,9 @@ if (gotLock) app.whenReady().then(() => {
   // "One moment." and the answer never overlap; a "stop talking" (hush) drops the lines queued before it
   const say = line => {
     const g = sayGen;
-    return (sayP = sayP.then(() => g !== sayGen ? null : new Promise(r => {
+    return (sayP = sayP.catch(() => {}).then(() => g !== sayGen ? null : new Promise(r => {
       const t0 = Date.now(); if (process.env.SPHERE_USERDATA) log('say: ' + line);
-      speak(line, () => { if (process.env.SPHERE_USERDATA) log(`said (${Date.now() - t0} ms): ${line}`); r(); });
+      try { speak(String(line).replace(/\0/g, ''), () => { if (process.env.SPHERE_USERDATA) log(`said (${Date.now() - t0} ms): ${line}`); r(); }); } catch (e) { log('say failed: ' + (e && e.message)); r(); }
     })));
   };
   function hush() { sayGen++; const n = speaking.size; stopSpeech(); log(`hush: ${n} playing stopped`); }
@@ -1981,9 +2022,7 @@ if (gotLock) app.whenReady().then(() => {
   function lastReply(s) {
     const file = transcriptOf(s.sessionId); let last = null;
     if (file) try {
-      const size = fs.statSync(file).size, len = Math.min(size, 1 << 20), fd = fs.openSync(file, 'r'), b = Buffer.alloc(len);
-      fs.readSync(fd, b, 0, len, size - len); fs.closeSync(fd);
-      last = require('./transcript').parse(b.toString('utf8')).filter(x => x.role === 'assistant').pop();
+      last = require('./transcript').parse(readSpan(file, 0, 1 << 20, true)).filter(x => x.role === 'assistant').pop();
     } catch {}
     return last ? last.text.replace(/```[\s\S]*?```/g, ' ').replace(/[*_`#>|]/g, '').trim() : '';
   }
@@ -2361,7 +2400,7 @@ if (gotLock) app.whenReady().then(() => {
     let cwd = ''; try { cwd = decodeURIComponent(String(h['x-sphere-cwd'] || '')); } catch {}
     return { s: s || null, title: s ? s.title : cwd ? path.basename(cwd) : 'A session' };
   }
-  const clip = (t, n = 300) => { t = String(t || '').replace(/\s+/g, ' ').trim(); if (!t) throw new Error('no text given'); return t.length > n ? t.slice(0, n) + '…' : t; };
+  const clip = (t, n = 300) => { t = String(t || '').replace(/\0/g, '').replace(/\s+/g, ' ').trim(); if (!t) throw new Error('no text given'); return t.length > n ? t.slice(0, n) + '…' : t; };
   const SESS_RUN = {
     speak: (a, me) => {
       const t = clip(a.text), k = me.s ? me.s.sessionId : me.title;
@@ -2401,6 +2440,7 @@ if (gotLock) app.whenReady().then(() => {
       rq.on('data', d => { body += d; if (body.length > 65536) rq.destroy(); });
       rq.on('end', async () => {
         let j; try { j = JSON.parse(body); } catch { return out(400, { error: 'bad JSON' }); }
+        if (!j || typeof j !== 'object') return out(400, { error: 'bad JSON' });
         const run = (who === 'ask' ? ASK_RUN : SESS_RUN)[j.name], args = j.arguments && typeof j.arguments === 'object' ? j.arguments : {};
         if (typeof run !== 'function' || !Object.prototype.hasOwnProperty.call(who === 'ask' ? ASK_RUN : SESS_RUN, j.name)) return out(200, { isError: true, text: 'no such tool' });
         const me = who === 'session' ? callerOf(rq.headers) : null, tag = `${who} tool${me ? ` (${me.title})` : ''}: ${j.name}`;
@@ -2607,7 +2647,7 @@ if (gotLock) app.whenReady().then(() => {
   mgr = require('./manage').create({
     settings: () => settings, dir: app.getPath('userData'), log,
     send: (id, text) => sessionSend(id, text), manage: (id, act, name) => sessionManage(id, act, name), newSession: (folder, model, text) => sessionNew(folder, model, text),
-    transcriptOf, bornOf: id => { const f = transcriptOf(id); return f ? born(f) : -1; },
+    transcriptOf, setMoved: (id, f) => moved.set(id, f), bornOf: id => { const f = transcriptOf(id); return f ? born(f) : -1; },
     awaiting: id => awaiting.get(id) === true || attn.has(String(id)), blocked: () => !!(overlay || opening),
     cap: text => vCap('', text), say: text => { if (settings.askSpeak) say(text); }, modeChanged: () => {},
     changed: () => { if (settings.manageOn) { lastFeed = mgr.apply(lastFeed); feedOut(); } },
@@ -2620,7 +2660,7 @@ if (gotLock) app.whenReady().then(() => {
       case 'park': return id ? mgr.park(id) : { ok: false, why: 'bad session' };
       case 'resume': return id ? mgr.resume(id) : { ok: false, why: 'bad session' };
       case 'first': case 'last': return id ? mgr.order(id, a.act) : { ok: false, why: 'bad session' };
-      case 'swap': return id ? mgr.swapNow(id) : { ok: false, why: 'bad session' };
+      case 'swap': case 'swapnew': return id ? mgr.swapNow(id, a.act === 'swapnew' ? 'new' : null) : { ok: false, why: 'bad session' };
       case 'noswap': return id ? mgr.noSwap(id) : { ok: false, why: 'bad session' };
       case 'cancel': return { ok: mgr.cancel() };
       case 'state': return mgr.state();
@@ -2632,6 +2672,8 @@ if (gotLock) app.whenReady().then(() => {
     }
     return { ok: false, why: 'unknown action' };
   });
+  // a moved transcript (rewind, clear-swap) counts for the tiles' tokens and activity too, until the feed names a newer one
+  feed.setResolve((id, f) => { const mv = moved.get(id); return mv && born(mv) >= 0 && !(born(f) >= born(mv)) ? mv : f; });
   feed.watch(f => { lastFeed = mgr.apply(f); attnTidy(); cycleVoice(f); feedOut(); mgr.tick(); });
   // the renderer may still be loading when the first state comes (a line already playing at start): it gets the last one once loaded
   let lastTalk = null;

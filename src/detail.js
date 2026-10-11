@@ -100,7 +100,12 @@ async function agent(file, toolId) {
     let meta; try { meta = JSON.parse(await fs.promises.readFile(path.join(dir, m), 'utf8')); } catch { continue; }
     if (!meta || meta.toolUseId !== toolId) continue;
     const f = path.join(dir, m.replace(/\.meta\.json$/, '.jsonl'));
-    let t; try { const st = await fs.promises.stat(f); if (st.size > 64 << 20) return { ok: false, why: 'too large' }; t = await fs.promises.readFile(f, 'utf8'); } catch { return { ok: false, why: 'unreadable' }; }
+    // the last 200 steps are shown: a big transcript is read from its last 16 MB only (from a whole line)
+    let t; try {
+      const st = await fs.promises.stat(f), max = 16 << 20;
+      if (st.size <= max) t = await fs.promises.readFile(f, 'utf8');
+      else { const fh = await fs.promises.open(f, 'r'); try { const b = Buffer.alloc(max); await fh.read(b, 0, max, st.size - max); t = b.toString('utf8'); t = t.slice(t.indexOf('\n') + 1); } finally { await fh.close(); } }
+    } catch { return { ok: false, why: 'unreadable' }; }
     const msgs = require('./transcript').parse(t, { sidechain: true }).filter(x => x.role !== 'user').slice(-200);
     return { ok: true, type: String(meta.agentType || ''), msgs: msgs.map(x => ({ role: x.role, text: x.text })) };
   }

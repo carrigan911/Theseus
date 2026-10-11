@@ -81,7 +81,9 @@ function run(model, sys, prompt, { web, token, timeoutMs, cwd, tools }) {
     let out = '', err = '', done = false;
     const end = (e, v) => { if (done) return; done = true; clearTimeout(timer); e ? rej(e) : res(v); };
     const timer = setTimeout(() => { killTree(p); end(new Error('took too long')); }, timeoutMs);
+    p.stdout.setEncoding('utf8'); p.stderr.setEncoding('utf8');   // a character split between chunks stays whole
     p.stdout.on('data', d => { out += d; }); p.stderr.on('data', d => { err += d; });
+    p.stdin.on('error', () => {});   // EPIPE when it exits while the prompt is still being written: 'close' answers
     p.on('error', () => { exe = null; end(new Error('Claude Code did not start')); });
     p.on('close', () => {
       let j = null; try { j = JSON.parse(out.trim().split(/\r?\n/).pop()); } catch {}

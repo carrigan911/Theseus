@@ -9,11 +9,12 @@ const waiting = new Map();   // id -> { res, timer }; replies are matched by id,
 
 function done(id, r) { const w = waiting.get(id); if (!w) return; waiting.delete(id); clearTimeout(w.timer); w.res(r); }
 // the helper is gone (exit, spawn error): fail what waits; quick deaths back off 1, 2, 4 ... 30 s before the next spawn
-function gone(p) {
+// (a helper killed for hanging counts as a quick death too, so a read that always hangs is not restarted at every poll)
+function gone(p, hung) {
   if (ps !== p) return;
   ps = null; buf = '';
-  fails = Date.now() - startedAt < 5000 ? fails + 1 : 0;
-  if (fails) retryAt = Date.now() + Math.min(30000, 1000 * 2 ** (fails - 1));
+  fails = hung || Date.now() - startedAt < 5000 ? fails + 1 : 0;
+  if (fails) retryAt = Date.now() + Math.min(hung ? 5000 : 30000, 1000 * 2 ** (fails - 1));   // a slow command on a busy machine holds the user's next press back 5 s at most
   for (const id of [...waiting.keys()]) done(id, { ok: false, why: 'helper exited' });
 }
 function start() {
@@ -27,6 +28,7 @@ function start() {
   p.stderr.on('data', () => {});               // drained, so a chatty helper can never block
   p.stdout.setEncoding('utf8');
   p.stdout.on('data', d => {
+    if (ps !== p) return;   // a killed helper's last output never joins the next helper's lines
     buf += d; let i;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
@@ -53,7 +55,7 @@ function pump() {
   }
   const p = ps, id = nextId++; busy = true;
   const res = r => { busy = false; watch(w.cmd, r); w.res(r); setImmediate(pump); };
-  const timer = setTimeout(() => { done(id, { ok: false, why: 'timeout' }); try { p.kill(); } catch {} }, w.ms);
+  const timer = setTimeout(() => { done(id, { ok: false, why: 'timeout' }); try { p.kill(); } catch {} gone(p, true); }, w.ms);   // gone now: the next command gets a fresh helper
   waiting.set(id, { res, timer });
   try { p.stdin.write(JSON.stringify({ id, ...w.cmd }) + '\n'); } catch { done(id, { ok: false, why: 'write failed' }); }
 }

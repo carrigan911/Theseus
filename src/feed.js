@@ -11,6 +11,11 @@ const DEFAULT_SWAP = { 'Session Manager': 250000 }; // everything else 200000
 const str = (v, d = '') => typeof v === 'string' ? v : d;
 const num = v => { const n = typeof v === 'string' && v.trim() ? Number(v) : v; return typeof n === 'number' && isFinite(n) ? n : null; };
 
+// a session's transcript may move (a rewind, a clear-swap): main tells the feed the file it continues in
+let resolve = (id, f) => f;
+const setResolve = fn => { resolve = typeof fn === 'function' ? fn : (id, f) => f; };
+const fileOf = s => typeof s.transcript === 'string' && s.transcript ? resolve(String(s.sessionId), s.transcript) : null;
+
 // the file as parsed JSON, or why not: 'absent' (no file) / 'bad' (empty, half-written, not JSON)
 function load() {
   if (!FEED()) return { raw: reader() };
@@ -26,7 +31,8 @@ function build(raw) {
     const swapAt = num(s.swapAt) > 0 ? num(s.swapAt) : DEFAULT_SWAP[group] || 200000;
     let tokens = num(s.contextTokens), act = null;   // act: working / waiting / idle (null = unknown)
     // Parked sessions stay frozen at the feed value; others get live numbers when a transcript is known.
-    if (group !== 'Parked' && typeof s.transcript === 'string' && s.transcript) { const t = contextTokens(s.transcript); if (t != null) tokens = t; act = activity(s.transcript); }
+    const tf = group !== 'Parked' && fileOf(s);
+    if (tf) { const t = contextTokens(tf); if (t != null) tokens = t; act = activity(tf); }
     const pct = tokens != null ? Math.min(1, Math.max(0, tokens / swapAt)) : Math.min(1, Math.max(0, (num(s.contextPct) || 0) / 100));
     return { sessionId: id, title: str(s.title) || '?', model: str(s.model), effort: str(s.effort), group,
              parentId: str(s.parentId) || null, folder: str(s.folder) || null, cwd: str(s.cwd) || null, link: s.reader ? '' : str(s.link) || `claude://claude.ai/epitaxy/${id}`, tokens, swapAt, pct, activity: act,
@@ -97,8 +103,9 @@ function watch(onChange) {
   const onEmit = emit; emit = f => { lastFeed = f; onEmit(f); };
   const actCheck = () => {
     if (stopped || !lastFeed || !lastRaw) return;
-    const files = new Map(lastRaw.sessions.filter(s => s && typeof s.transcript === 'string' && s.transcript).map(s => [String(s.sessionId), s.transcript]));
-    if (lastFeed.sessions.some(s => files.has(s.sessionId) && s.group !== 'Parked' && activity(files.get(s.sessionId)) !== s.activity)) tick();
+    const files = new Map(lastRaw.sessions.filter(s => s && fileOf(s)).map(s => [String(s.sessionId), fileOf(s)]));
+    if (!lastFeed.sessions.some(s => files.has(s.sessionId) && s.group !== 'Parked' && activity(files.get(s.sessionId)) !== s.activity)) return;
+    if (lastRaw.reader) { const f = build(lastRaw); if (f) emit(f); } else tick();   // the reader: rebuild from its last scan, no new scan
   };
   tick(); arm();
   const iv = setInterval(() => { arm(); tick(); }, 15000), ia = setInterval(actCheck, 3000);
@@ -107,8 +114,8 @@ function watch(onChange) {
 // sessionId -> transcript path, from the last good feed read (the built feed leaves the paths out)
 let rawNow = null;
 function transcriptFiles() {
-  return new Map(rawNow && Array.isArray(rawNow.sessions) ? rawNow.sessions.filter(s => s && typeof s.transcript === 'string' && s.transcript && s.archived !== true).map(s => [String(s.sessionId), s.transcript]) : []);
+  return new Map(rawNow && Array.isArray(rawNow.sessions) ? rawNow.sessions.filter(s => s && s.archived !== true && fileOf(s)).map(s => [String(s.sessionId), fileOf(s)]) : []);
 }
 // the raw sessions of the last good read while the built-in reader stands in (null when a feed file is used)
 const readerSessions = () => (rawNow && rawNow.reader ? rawNow.sessions : null);
-module.exports = { readFeed, watch, FEED, transcriptFiles, readerSessions };   // FEED(): the feed file now
+module.exports = { readFeed, watch, FEED, transcriptFiles, readerSessions, setResolve };   // FEED(): the feed file now

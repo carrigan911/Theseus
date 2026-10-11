@@ -48,7 +48,7 @@ export function createChips() {
   function qMenu(b) {
     const parked = cur.group === 'Parked', items = parked
       ? [{ label: 'Resume now', act: 'resume' }, { label: 'First in the queue', act: 'first' }, { label: 'Last in the queue', act: 'last' }]
-      : [{ label: 'Park', act: 'park', sub: 'checkpoint, commit, stop' }, { label: 'Swap now', act: 'swap', sub: 'fresh session from the checkpoint' }, { label: "Don't swap", act: 'noswap', sub: 'until its next line' }];
+      : [{ label: 'Park', act: 'park', sub: 'checkpoint, commit, stop' }, { label: 'Swap now', act: 'swap', sub: 'by the swap method in settings' }, { label: 'Swap to a new session', act: 'swapnew', sub: 'fresh session from the checkpoint' }, { label: "Don't swap", act: 'noswap', sub: 'until its next line' }];
     dropMenu(b, items, async it => {
       const t = tok; note.textContent = 'Working…'; note.className = 'chn';
       const r = await window.sphere.manage({ act: it.act, id: cur.sessionId }).catch(e => ({ ok: false, why: e.message }));

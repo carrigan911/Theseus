@@ -46,14 +46,14 @@ function create(opts = {}) {
     }
   }
   // the helper is gone (exit, spawn error): fail what waits; quick deaths back off 1, 2, 4 ... 30 s; a used helper comes back by itself
-  function gone(p) {
+  function gone(p, hung) {   // hung: killed for not answering, counts as a quick death (no restart every 9 s)
     if (ps !== p) return;
     ps = null; buf = ''; ready = false;
-    fails = Date.now() - startedAt < 5000 ? fails + 1 : 0;
+    fails = hung || Date.now() - startedAt < 5000 ? fails + 1 : 0;
     if (fails) retryAt = Date.now() + Math.min(30000, 1000 * 2 ** (fails - 1));
     for (const id of [...waiting.keys()]) done(id, { ok: false, why: 'helper exited' });
     if (wanted && !disposed && !respawnTimer) {
-      respawnTimer = setTimeout(() => { respawnTimer = null; if (!disposed && !ps) revive(); }, Math.max(500, retryAt - Date.now()));
+      respawnTimer = setTimeout(() => { respawnTimer = null; if (!disposed && !ps) revive(); }, Math.max(500, retryAt - Date.now() + 50));   // +50: a timer may fire a little early, and start() would refuse
       if (respawnTimer.unref) respawnTimer.unref();
     }
   }
@@ -81,6 +81,7 @@ function create(opts = {}) {
     p.stderr.on('data', () => {});               // drained, so a chatty helper can never block
     p.stdout.setEncoding('utf8');
     p.stdout.on('data', d => {
+      if (ps !== p) return;   // a killed helper's last output never joins the next helper's lines
       buf += d; let i;
       while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (line) onLine(line); }
     });
@@ -95,7 +96,7 @@ function create(opts = {}) {
     if (!ps && !start()) return Promise.resolve({ ok: false, why: 'helper down' });
     const p = ps, id = nextId++;
     return new Promise(res => {
-      const timer = setTimeout(() => { done(id, { ok: false, why: 'timeout' }); try { p.kill(); } catch {} }, ms + (ready ? 0 : 30000));
+      const timer = setTimeout(() => { done(id, { ok: false, why: 'timeout' }); try { p.kill(); } catch {} gone(p, true); }, ms + (ready ? 0 : 30000));
       waiting.set(id, { res, timer });
       try { p.stdin.write(JSON.stringify({ id, ...cmd }) + '\n'); } catch { done(id, { ok: false, why: 'write failed' }); }
     });

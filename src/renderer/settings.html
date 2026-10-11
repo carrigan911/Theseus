@@ -234,7 +234,8 @@
   <h2>Session management</h2>
   <div class="row"><label>Manage sessions<small><span class="nm">Theseus</span> swaps sessions at their swap line, keeps the mode on a schedule, and parks and resumes sessions. Off: it only shows them</small></label><input type="checkbox" data-k="manageOn"></div>
   <div class="row mgr" id="mgrWarn" style="display:none"><label><small id="mgrWarnText"></small></label><button id="mgrOutsideOk" style="display:none">Manage anyway</button></div>
-  <div class="row mgr"><label>Fresh-session swaps<small>At the swap line a session updates its checkpoint and commits; a fresh one continues from it and the old one is archived. 30 s to say cancel, or right-click its tile: Queue, Don&#39;t swap</small></label><input type="checkbox" data-k="manageSwaps"></div>
+  <div class="row mgr"><label>Swaps<small>At the swap line a session updates its checkpoint and commits, then continues fresh from it. 30 s to say cancel, or right-click its tile: Queue, Don&#39;t swap</small></label><input type="checkbox" data-k="manageSwaps"></div>
+  <div class="row mgr"><label>Swap method<small>Clear: the session clears itself and Theseus re-prompts it (same title, group, model; one typed message). New session: a fresh session starts and the old one is archived (needs the app&#39;s buttons). Clear falls back to New session when it fails twice</small></label><select data-k="swapMethod"><option value="clear">Clear (default)</option><option value="new">New session</option></select></div>
   <div class="row mgr"><label>Swap line<small>Context tokens</small></label><input type="number" min="50000" max="1000000" step="10000" data-k="swapTokens" data-num></div>
   <div class="row mgr"><label>Age limit<small>Minutes a session may run before a swap (0 = no limit)</small></label><input type="number" min="0" max="1440" step="10" data-k="swapAgeMin" data-num></div>
   <div class="row mgr"><label>Modes and schedule<small><span class="nm">Theseus</span> keeps the mode itself; Night and Weekend start and end on their own</small></label><input type="checkbox" data-k="manageModes"></div>
@@ -427,7 +428,9 @@ for (const el of els) {
     const v = el.type === 'checkbox' ? el.checked : 'num' in el.dataset ? (el.type === 'number' ? num(el) : Number(el.value)) : el.value;
     if (v == null) return;
     const val = el.nextElementSibling; if (val && val.classList.contains('val')) val.textContent = el.dataset.unit ? v + ' ' + el.dataset.unit : Number(v).toFixed(2);
-    window.sphere.setSettings({ [el.dataset.k]: v });
+    if (el.type === 'range') {   // a drag: at most one setting change per 80 ms (the last value always goes)
+      el._v = v; if (!el._t) el._t = setTimeout(() => { el._t = 0; window.sphere.setSettings({ [el.dataset.k]: el._v }); }, 80);
+    } else window.sphere.setSettings({ [el.dataset.k]: v });
     if (el.dataset.k === 'voiceCycle') document.getElementById('cycleRow').style.display = document.getElementById('cycleTestRow').style.display = v ? '' : 'none';
   });
 }

@@ -336,7 +336,8 @@ const onSphere = f => f.sessions.filter(s => shows('tilesSphere', tileGroup(s)))
 function onFeed(f) {
   if (!f || !Array.isArray(f.sessions)) return;                    // a broken read: keep what is shown
   realFeed = f; updateWaiting(f); con.feed(f); const sf = sphereFeed(f); scaleTarget = sizeFor(onSphere(sf)); wake(); labelScale();
-  if (!view) { if (sphere.setFeed(sf)) feedDirty = true; } else if (view === 'projects') showView('projects');
+  if (!view) { if (respread && respread.rebuild && spread > 0) return;   // folding for a rebuild: that rebuild takes this feed (realFeed)
+    if (sphere.setFeed(sf)) feedDirty = true; } else if (view === 'projects') showView('projects');
 }
 // ---- bottom bar on the dark panel: Claude app settings | General settings | mode + Theseus settings (mode, core, voice) ----
 const BAR_PX = 96;
@@ -624,7 +625,7 @@ function searchRun() {
     if (my !== sTok || (r && r.why === 'cancelled')) return;
     if (!r || !r.ok) searchShow([], (r && r.why) || 'Search failed');
     else searchShow(r.hits, r.hits.length ? (r.done ? '' : 'The first hits only (the search stopped early)') : 'No conversation has this' + (filtersOn() ? ' (with these filters)' : ''));
-  }, () => {});
+  }, () => { if (my === sTok) searchShow([], 'Search failed'); });
 }
 function searchShow(hits, note) {
   const b = sIn.closest('.sb').getBoundingClientRect();
@@ -688,10 +689,12 @@ sRes.addEventListener('click', e => {
   e.stopPropagation();   // the hit is gone once the list closes: the window's click handler would take it for a click outside
   const b = e.target.closest('.sh'); if (!b) return;
   const h = b._h, s = realFeed.sessions.find(x => String(x.sessionId) === h.sessionId);
+  if (!s) { searchShow([], 'That session is no longer on the sphere (parked, filtered out or archived).'); return; }
   searchClose();
-  if (s) openConsole(s, h);
+  openConsole(s, h);
 });
-function refreshClaude() { window.sphere.claudeSnap().then(s => { lastSnap = s; renderTop(s); markView(); }); }
+let snapTok = 0, snapShown = 0;   // a slow older snapshot never overwrites a newer one (a slow one still shows when none newer came back)
+function refreshClaude() { const my = ++snapTok; window.sphere.claudeSnap().then(s => { if (my < snapShown || !s) return; snapShown = my; lastSnap = s; renderTop(s); markView(); }, () => {}); }
 setInterval(() => { if (spreadOn) refreshClaude(); }, 4000);
 window.sphere.onOverlayClosed(() => { if (rEditing) return; overlayOn = con.on; barCard = ''; rlist.style.display = 'none'; if (view === 'artifacts') showView('artifacts'); });   // fresh pictures
 // the Claude window's place over the background: centred on the panel (wide: across it), between the top groups and the bottom bar

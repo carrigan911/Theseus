@@ -30,6 +30,9 @@ async function capture(title, rect) {
   const f = slug(title) + '.png', idx = load(), old = idx[title] && idx[title].file;
   fs.writeFileSync(path.join(dir(), f), crop.resize({ width: 640, quality: 'good' }).toPNG());
   idx[title] = { file: f, t: Date.now() };
+  // the 150 most recent pictures are kept (each page title ever opened would otherwise stay forever)
+  const all = Object.keys(idx).sort((x, y) => ((idx[y] && idx[y].t) || 0) - ((idx[x] && idx[x].t) || 0));
+  for (const k of all.slice(150)) { const e = idx[k]; delete idx[k]; if (e && typeof e.file === 'string' && !/[\\/]/.test(e.file) && e.file !== f) try { fs.unlinkSync(path.join(dir(), e.file)); } catch {} }
   const tmp = path.join(dir(), 'index.json.tmp');
   fs.writeFileSync(tmp, JSON.stringify(idx)); fs.renameSync(tmp, path.join(dir(), 'index.json'));
   // an old-style file (slug only) goes once no title uses it

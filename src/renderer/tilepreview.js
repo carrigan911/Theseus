@@ -94,7 +94,7 @@ export function makeWearThumbs(wear, glowHex, onEach, w = 150, h = 130, pct = 0.
 async function drawWearThumbs(wear, glowHex, w, h, pct, onEach) {
   const cv = document.createElement('canvas'), r = rig(cv, w, h, glowHex, 1), out = {};
   try {
-    for (let k = 0; k <= 12; k++) { await nextFrame(); setPanelWear(k); r.wear(0, pct); await r.compile(); r.render(); onEach(k, out[k] = cv.toDataURL('image/png')); }
+    for (let k = 0; k <= 12; k++) { await nextFrame(); setPanelWear(k); r.wear(0, pct); const c = r.compile(); setPanelWear(wear | 0); await c; setPanelWear(k); r.render(); setPanelWear(wear | 0); onEach(k, out[k] = cv.toDataURL('image/png')); }   // the live preview gets its own wear back between thumbs
   } finally { setPanelWear(wear | 0); r.dispose(); }
   return out;
 }

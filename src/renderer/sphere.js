@@ -229,11 +229,11 @@ function faceTexture(s) {
       g.save(); g.beginPath(); g.roundRect(12, 12, 488, 304, 18); g.clip();
       const k = Math.max(488 / img.width, 304 / img.height); g.drawImage(img, 12 + (488 - img.width * k) / 2, 12, img.width * k, img.height * k);   // top of the page
       g.restore();
-      g.font = '600 40px ' + font; g.fillText(fit(s.title, 480), 256, 358);
+      g.font = '600 40px ' + font; g.fillText(fit(String(s.title || ''), 480), 256, 358);
     } else {
       g.font = '600 54px ' + font;
       const lines = []; let cur = '';
-      for (const wd of s.title.split(' ')) { const x = cur ? cur + ' ' + wd : wd; if (g.measureText(x).width > 440 && cur) { lines.push(cur); cur = wd; } else cur = x; }
+      for (const wd of String(s.title || '').split(' ')) { const x = cur ? cur + ' ' + wd : wd; if (g.measureText(x).width > 440 && cur) { lines.push(cur); cur = wd; } else cur = x; }
       lines.push(cur);
       const shown = lines.slice(0, 3); let y = 200 - (shown.length - 1) * 26;
       for (const l of shown) { g.fillText(fit(l, 470), 256, y); y += 52; }
@@ -641,7 +641,7 @@ export function createSphere(scene) {
   const ACT_U = [['uWork', 'working'], ['uWait', 'waiting'], ['uIdle', 'idle']];
   function setActivity(on) { actOn = !!on; }
   function fxTile(t, now, dt) {
-    const u = t.mesh.material.userData.u, rip = t.ripple && now - t.ripple < 1600;
+    let u = t.mesh.material.userData.u; const rip = t.ripple && now - t.ripple < 1600;
     // working / waiting / idle look eases over ~0.4 s (Parked and switched off: none)
     const act = actOn && t.s && !t.energy && t.s.group !== 'Parked' && !t.s.dim ? t.s.activity : null, k = Math.min(1, dt * 6);
     if (!t.energy) {                                                   // (blank cells: never active, never ripple; their material is shared)
@@ -649,7 +649,7 @@ export function createSphere(scene) {
       u.uRipple.value = rip ? (now - t.ripple) / 1600 : -1; if (rip) fxBusy = true;
     }
     // energy cells renew every 30-90 s on the core's clock (faster in Max performance, slower in Night / Max efficiency)
-    if (t.energy && spreadF === 0 && (t.left -= dt * motion.speed) <= 0) { t.left = 30 + Math.random() * 60; if (!t.reborn) startRebirth(t, null); }
+    if (t.energy && spreadF === 0 && (t.left -= dt * motion.speed) <= 0) { t.left = 30 + Math.random() * 60; if (!t.reborn) { startRebirth(t, null); u = t.mesh.material.userData.u; } }   // its own material now: never drive the shared one
     const part = t.shellOnly || t.rowsOnly;                              // a tile shown in only one of the two places
     if (!t.reborn && !t.energy && !part) return;
     // energy cells and sphere-only tiles shrink away as the tiles spread flat; rows-only tiles grow in at the end of the spread

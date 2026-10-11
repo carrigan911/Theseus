@@ -201,7 +201,7 @@ namespace SsAudio
         public static void Shutdown()
         {
             quit = true; wake.Set();
-            try { Voice.Teardown(); } catch { }
+            try { Voice.StopRelisten(); Voice.Teardown(); } catch { }
             try { en.UnregisterEndpointNotificationCallback(notify); } catch { }
             lock (sync) { Unhook(EOut); Unhook(EMic); }
         }
@@ -439,7 +439,7 @@ namespace SsAudio
         public const double SureCmd = 0.85;   // a command under this goes past Whisper first (with Ask on)
         public const double MinQuestionS = 1.2;   // "Theseus" alone is about 0.8 s
         static DateTime followUntil = DateTime.MinValue;
-        static Grammar qFree, chatG; static Timer followT; static DateTime wakeHint = DateTime.MinValue;
+        static Grammar qFree, chatG; static Timer followT, restartT; static string lostMode; static int listenGen, lostN; static DateTime relistenAt = DateTime.MinValue; static DateTime wakeHint = DateTime.MinValue;
 
         static SpeechRecognitionEngine NewEngine(string m) { Grammar f, c; return NewEngine(m, out f, out c); }
         static SpeechRecognitionEngine NewEngine(string m, out Grammar free, out Grammar chat)
@@ -508,16 +508,23 @@ namespace SsAudio
 
         static void Listening(bool on) { J.Line("{\"event\":\"listening\",\"on\":" + J.B(on) + "}"); }
 
-        public static string Listen(string m)
+        public static string Listen(string m) { return Listen(m, false, -1); }
+        static string Listen(string m, bool relisten) { return Listen(m, relisten, -1); }
+        static string Listen(string m, bool relisten, int gen)   // gen >= 0: only if no other mode was asked for since (Rebind)
         {
             if (m != "off" && m != "ptt" && m != "wake" && m != "always") throw new Exception("mode must be off, ptt, wake or always");
+            // a mode asked for now wins over a lost one being brought back (listenGen tells Relisten it came)
+            if (relisten) { lock (vl) { if (lostMode != m) return "\"mode\":" + J.S(mode); } }
+            else lock (vl) { if (gen >= 0 && listenGen != gen) return "\"mode\":" + J.S(mode); lostMode = null; listenGen++; lostN = 0; relistenAt = DateTime.MinValue; }
             StopPoller();
             lock (vl)
             {
+                if (relisten && lostMode != m) return "\"mode\":" + J.S(mode);
+                lostMode = null;   // set again by OnCompleted if this start fails later
                 Teardown();
                 mode = m;
                 if (m == "off") return "\"mode\":\"off\"";
-                eng = NewEngine(m, out qFree, out chatG);
+                try { eng = NewEngine(m, out qFree, out chatG); } catch { Teardown(); mode = "off"; throw; }
                 var me = eng;
                 me.SpeechRecognized += OnRecognized;
                 me.SpeechRecognitionRejected += OnRejected;
@@ -571,10 +578,19 @@ namespace SsAudio
         // default mic changed under a running always / wake recogniser: bind to the new one
         public static void Rebind()
         {
-            string m;
-            lock (vl) { m = mode; if (testInput != null || (m != "always" && m != "wake") || eng == null) return; }
-            Listen(m);
+            string m; int g;
+            lock (vl) { m = mode; g = listenGen; if (testInput != null || (m != "always" && m != "wake") || eng == null) return; }
+            try { Listen(m, false, g); }
+            catch (Exception ex)
+            {   // no device right now (the mic was unplugged): keep trying, as when listening ends by itself
+                J.Line("{\"event\":\"error\",\"where\":\"rebind\",\"why\":" + J.S(ex.Message) + "}");
+                // only when no other mode was asked for meanwhile (our own Listen counted listenGen once)
+                lock (vl) { if (listenGen == g + 1 && mode == "off" && testInput == null && lostMode == null) { lostMode = m; ArmRelisten(0); } }
+            }
         }
+        // the helper is closing: no retry may open the mic again
+        static bool closing;
+        public static void StopRelisten() { lock (vl) { closing = true; lostMode = null; if (restartT != null) { restartT.Dispose(); restartT = null; } } }
 
         static void OnHypothesis(object s, SpeechHypothesizedEventArgs e)
         {
@@ -597,7 +613,13 @@ namespace SsAudio
             }
         }
 
+        // an error here (a full disk while saving the question's audio) must not end the helper: it runs on the recogniser's thread
         static void OnRecognized(object s, SpeechRecognizedEventArgs e)
+        {
+            try { Recognized(s, e); }
+            catch (Exception ex) { J.Line("{\"event\":\"error\",\"where\":\"recognized\",\"why\":" + J.S(ex.Message) + "}"); }
+        }
+        static void Recognized(object s, SpeechRecognizedEventArgs e)
         {
             string m;
             lock (vl)
@@ -644,8 +666,45 @@ namespace SsAudio
                 active = false;
                 try { eng.SetInputToNull(); } catch { }
                 bool again = stopping && wantOpen;
+                // always / wake ended by itself (the audio service restarted, the mic was taken): start it again in 5 s
+                bool lost = !stopping && wantOpen && testInput == null && (mode == "always" || mode == "wake");
                 stopping = false;
                 if (again) { try { StartRec(); } catch { } }
+                if (lost)
+                {
+                    J.Line("{\"event\":\"error\",\"where\":\"listen\",\"why\":" + J.S(e.Error != null ? e.Error.Message : "recognition ended") + "}");
+                    // lost again within 30 s of bringing it back: the next try waits longer
+                    lostMode = mode; ArmRelisten((DateTime.UtcNow - relistenAt).TotalSeconds < 30 ? lostN + 1 : 0);
+                }
+            }
+        }
+
+        // listening that ended by itself comes back: 5, 10, 20, 40, 60, 60 ... s apart until it starts or another mode is asked for
+        static void ArmRelisten(int n)
+        {
+            lock (vl)
+            {
+                if (closing) { lostMode = null; return; }
+                lostN = n;
+                if (restartT != null) restartT.Dispose();
+                restartT = new Timer(delegate { Relisten(n); }, null, Math.Min(60000, 5000 << Math.Min(n, 4)), Timeout.Infinite);
+            }
+        }
+        static void Relisten(int n)
+        {
+            string m; int g;
+            lock (vl)
+            {
+                m = lostMode; g = listenGen; if (m == null) return;
+                if (testInput != null) { ArmRelisten(n); return; }   // a test has the recogniser: look again later
+                relistenAt = DateTime.UtcNow;
+            }
+            try { Listen(m, true); }
+            catch (Exception ex)
+            {
+                J.Line("{\"event\":\"error\",\"where\":\"relisten\",\"why\":" + J.S(ex.Message) + "}");
+                bool again; lock (vl) { if (listenGen == g && lostMode == null) lostMode = m; again = lostMode != null; }
+                if (again) ArmRelisten(n + 1);
             }
         }
 

@@ -18,7 +18,7 @@ const isDir = d => { try { return fs.statSync(d).isDirectory(); } catch { return
 async function terminal(dir) {
   if (!isDir(dir)) return { ok: false, why: 'the session folder was not found' };
   const wt = [P.onPath('wt.exe'), process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps', 'wt.exe')].find(f => f && fs.existsSync(f));
-  if (wt) { const r = await start(wt, ['-w', '0', 'nt', '-d', dir], dir); if (r.ok) return { ok: true, out: 'Windows Terminal' }; }
+  if (wt && !dir.includes(';')) { const r = await start(wt, ['-w', '0', 'nt', '-d', dir], dir); if (r.ok) return { ok: true, out: 'Windows Terminal' }; }
   const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const r = await start(ps, ['-NoExit', '-NoLogo'], dir);
   return r.ok ? { ok: true, out: 'PowerShell' } : r;
@@ -74,6 +74,11 @@ async function openFile(root, rel, line, how, cmd, shell) {
   if (how === 'custom' && cmd) {
     const [exe, ...args] = splitCmd(cmd); if (!exe || !path.isAbsolute(exe)) return { ok: false, why: 'the editor command needs the full path of its program' };
     return start(exe, args.length ? args.map(a => a.replace(/\{file\}/g, f).replace(/\{line\}/g, String(ln))) : [f], root);
+  }
+  // the system opener runs programs and scripts: never from here (a voice Ask or a link could name one)
+  // ("a.exe." and "a.exe " name a.exe on Windows); such a file is shown in its folder instead
+  if (/\.(exe|bat|cmd|com|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|lnk|url|scr|hta|cpl|reg|jar|appref-ms|application|pif|scf)$/i.test(f.replace(/[. ]+$/, ''))) {
+    shell.showItemInFolder(f); return { ok: true, why: 'shown in its folder: it would run as a program (set an editor in Settings to open it)' };
   }
   const e = await shell.openPath(f); return e ? { ok: false, why: e } : { ok: true };
 }

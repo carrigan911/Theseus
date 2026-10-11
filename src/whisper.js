@@ -22,6 +22,7 @@ function start() {
   proc = p; buf = ''; ready = false;
   p.stdout.setEncoding('utf8');
   p.stdout.on('data', d => {
+    if (p !== proc) return;   // a killed server's last output never joins the next one's lines
     buf += d; let i;
     while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (l) onLine(l); }
   });

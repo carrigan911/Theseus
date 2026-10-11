@@ -14,7 +14,12 @@ const MSG = {
   cont: cp => `Continue the task. Read your checkpoint first: ${cp}`,
   fresh: cp => `You are the fresh session after a swap; the swap is done, so do not reply SWAP-READY. Read your checkpoint first: ${cp}, then continue the task.`,
   park: cp => `Park: commit, update your checkpoint (${cp}), then stop.`,
+  clear: (cp, f) => `Clear-swap: bring your checkpoint up to date (${cp}) and commit. Add anything the fresh you needs (running jobs, result files) to ${f}. If Remote Control is on for you, turn it off (set_remote_control self false) and add the line "Turn Remote Control back on: set_remote_control self true" to ${f}. Then clear_session self and end your turn. If you can't clear yourself, reply NO-CLEAR instead.`,
+  clearRetry: f => `Clear-swap retry: the clear did not happen. Turn Remote Control off if it is on, then clear_session self and end your turn (${f} is ready).`,
+  reprompt: f => `Fresh clear-swap: read and follow ${f}`,
 };
+const KEY = 'Fresh clear-swap: read and follow';   // the reprompt's start as written in a transcript line
+const IDLE_MS = 45000, LAND_MS = 2 * 60000;   // the clear lands within ~20 s of the turn's end (tested 10-9)
 const baseTitle = t => String(t || '').replace(/\s*\(old\b[^)]*\)\s*$/i, '');
 const slug = t => baseTitle(t).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'task';
 const hm = s => { const m = /^(\d\d):(\d\d)$/.exec(s || ''); return m ? +m[1] * 60 + +m[2] : null; };
@@ -27,8 +32,11 @@ function create(api) {
   const t0 = Date.now();
   const S = () => api.settings();
   const file = path.join(api.dir, 'manage.json'), logFile = path.join(api.dir, 'manage.log');
-  let st = { groups: {}, queue: [], swaps: {}, skips: {}, resumed: {}, mode: 'normal', sched: null, warned: {} };
+  let st = { groups: {}, alias: {}, moved: {}, queue: [], swaps: {}, skips: {}, resumed: {}, mode: 'normal', sched: null, warned: {} };
   try { st = { ...st, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch {}
+  for (const [id, m] of Object.entries(st.moved || {})) {   // clear-swapped sessions read their new conversation after a restart too
+    if (m && m.file && Date.now() - m.at < 7 * 864e5 && fs.existsSync(m.file)) api.setMoved(id, m.file); else delete st.moved[id];
+  }
   let saveT = 0;
   const save = () => { clearTimeout(saveT); saveT = setTimeout(() => { try { fs.writeFileSync(file + '.tmp', JSON.stringify(st, null, 1)); fs.renameSync(file + '.tmp', file); } catch {} if (api.changed) api.changed(); }, 300); };   // changed: main re-applies the groups
   function log(line) {
@@ -67,14 +75,13 @@ function create(api) {
     let cp = null;
     const f = api.transcriptOf(s.sessionId);
     if (f) try {
-      const fd = fs.openSync(f, 'r'), b = Buffer.alloc(65536), n = fs.readSync(fd, b, 0, b.length, 0); fs.closeSync(fd);
-      const txt = b.toString('utf8', 0, n).replace(/\\\\/g, '\\');
-      const abs = /[A-Za-z]:[\\/][^"\s<>|*?]*?[\\/]\.claude[\\/]checkpoints[\\/][\w.-]+\.md/.exec(txt);
+      const txt = readFrom(f, 0, 65536, true).replace(/\\\\/g, '\\');
+      const abs = /[A-Za-z]:[\\/][^"\n<>|*?:]*?[\\/]\.claude[\\/]checkpoints[\\/][\w.-]+\.md/.exec(txt);   // spaces allowed, no second drive
       const rel = !abs && /\.claude[\\/]checkpoints[\\/]([\w.-]+\.md)/.exec(txt);
       if (abs) cp = path.normalize(abs[0]); else if (rel && home(s)) cp = path.join(home(s), '.claude', 'checkpoints', rel[1]);
     } catch {}
     if (!cp && home(s)) cp = path.join(home(s), '.claude', 'checkpoints', slug(s.title) + '.md');
-    if (!cp) cp = `.claude/checkpoints/${slug(s.title)}.md in your project folder`;   // no full path known (an outside feed without cwd)
+    if (!cp) return `.claude/checkpoints/${slug(s.title)}.md in your project folder`;   // no full path known (yet): not cached
     cpCache.set(s.sessionId, cp);
     return cp;
   }
@@ -86,10 +93,11 @@ function create(api) {
     outside = f.sessions.some(s => s.group === 'Session Manager');
     if (!on()) { feed = f; return f; }
     const line = S().swapTokens || 200000;
-    const sessions = f.sessions.map(s => {
+    const sessions = f.sessions.filter(s => st.groups[s.sessionId] !== 'Cleared').map(s => {   // Cleared: the old transcript of a clear-swapped session (built-in reader)
       const g = st.groups[s.sessionId] || (s.group === 'Session Manager' ? s.group : null);
       const o = { ...s, swapAt: line, pct: s.tokens != null ? Math.min(1, Math.max(0, s.tokens / line)) : s.pct };
       if (g) o.group = g;
+      if (st.alias[s.sessionId]) o.title = st.alias[s.sessionId];   // its new transcript would be named after the reprompt
       return o;
     });
     feed = { ...f, sessions };
@@ -108,44 +116,96 @@ function create(api) {
   const swapsOn = () => on() && S().manageSwaps !== false && (!outside || S().manageOutsideOk);
   function due(s) {
     const line = S().swapTokens || 200000, ageLim = S().swapAgeMin || 0, sk = st.skips[s.sessionId];
-    const tok = s.tokens || 0, age = ageMin(s);
+    const tok = s.tokens || 0, age = ageLim > 0 ? ageMin(s) : 0;   // the age costs file stats: only when there is an age limit
     if (sk && tok < sk.tokens && (!ageLim || age < sk.age)) return false;
     return tok >= line || (ageLim > 0 && age >= ageLim);
   }
+  const unwarn = id => { for (const k of Object.keys(st.warned)) if (k.endsWith(':' + id)) delete st.warned[k]; };
+  const unlinkQ = f => { if (f) try { fs.unlinkSync(f); } catch {} };
+  // give the swap up: a caption and a spoken line, and its line waits for the next skip mark
+  function drop(s, w, key, text) { delete st.swaps[s.sessionId]; skip(s); unlinkQ(w.file); save(); warn(key + ':' + s.sessionId, text); }
+  // an ask that has not got through: keep trying, but not past READY_MS from the first failure (a locked screen all night)
+  function sendFailed(s, w, what, r) {
+    if (w.sendWhy !== r.why) log(`swap "${w.title}": ${what} failed (${r.why}), trying again`); w.sendWhy = r.why;
+    if (!w.failAt) { w.failAt = now(); save(); }
+    if (now() - w.failAt > READY_MS) drop(s, w, 'send', `Could not ask ${w.title} to swap for 15 minutes: ${r.why}. Swap it by hand.`);
+  }
+  const gotThrough = r => r.ok || /^sent\b/.test(r.why || '');   // "sent, but it has not shown up yet" = typed, so never type it again
+  // one App control call while the swap is marked as sending, so a cancel cannot slip in between the ask and its stage
+  async function sending(w, kind, ...a) { w.sending = true; try { const r = await act(kind, ...a); if (gotThrough(r)) delete w.failAt; return r; } finally { w.sending = false; } }
   let busy = false;
   async function swapStep(s) {
     const id = s.sessionId, w = st.swaps[id], t = now();
     if (!w) {
       if (!due(s) || !idle(s)) return;
       if (!appCtl()) { warn('line:' + id, `${s.title} is at its swap line. Swap it by hand (App control is off).`); return; }
-      st.swaps[id] = { stage: 'cancel', at: t, title: baseTitle(s.title), folder: s.folder, model: s.model || null, cp: cpOf(s) }; save();
-      log(`swap "${s.title}": due (${s.tokens || 0} tokens, ${Math.round(ageMin(s))} min); 30 s to cancel`);
-      api.cap(`Swapping ${baseTitle(s.title)} in 30 s. Say or click cancel to stop.`); api.say(`Swapping ${baseTitle(s.title)}. Say cancel to stop.`);
+      const method = S().swapMethod === 'new' ? 'new' : 'clear', verb = method === 'clear' ? 'Clear-swapping' : 'Swapping';
+      unwarn(id);
+      st.swaps[id] = { stage: 'cancel', at: t, since: t, method, title: baseTitle(s.title), folder: s.folder, model: s.model || null, cp: cpOf(s) }; save();
+      log(`swap "${s.title}": due (${s.tokens || 0} tokens${S().swapAgeMin ? `, ${Math.round(ageMin(s))} min` : ''}; ${method}); 30 s to cancel`);
+      api.cap(`${verb} ${baseTitle(s.title)} in 30 s. Say or click cancel to stop.`); api.say(`${verb} ${baseTitle(s.title)}. Say cancel to stop.`);
+      return;
+    }
+    if (w.stage === 'cancel' && w.method === 'clear') {   // ClearSwap_Spec: the session clears itself, then gets the reprompt
+      if (t - w.at < CANCEL_MS || !idle(s)) return;
+      const f = api.transcriptOf(id); if (!f) { toNew(w, 'no transcript'); return; }
+      w.file = path.join(api.dir, 'clear_swaps', slug(w.title) + '.txt'); w.old = f; w.dir = path.dirname(f); w.from = sizeOf(f);
+      try { fs.mkdirSync(path.dirname(w.file), { recursive: true }); fs.writeFileSync(w.file, MSG.fresh(w.cp) + '\n'); } catch (e) { toNew(w, 'could not write ' + w.file); return; }
+      w.askWall = Date.now();   // file birth times are real time (the test clock only moves the schedule)
+      const r = await sending(w, 'send', id, MSG.clear(w.cp, w.file));
+      if (!gotThrough(r)) { sendFailed(s, w, 'clear ask', r); return; }
+      w.stage = 'casked'; w.at = t; w.idleAt = 0; save(); log(`swap "${w.title}": asked to clear itself`);
+      return;
+    }
+    if (w.stage === 'casked') {
+      if (said(w.old, w.from, 'NO-CLEAR')) { toNew(w, 'it replied NO-CLEAR'); return; }
+      if (t - w.at > READY_MS) { drop(s, w, 'clear', `${w.title} did not clear itself within 15 minutes. Swap it by hand.`); return; }
+      const size = sizeOf(w.old);
+      if (!idle(s) || size <= w.from) { w.idleAt = 0; return; }   // its turn has not ended yet
+      if (!w.idleAt) { w.idleAt = t; save(); return; }
+      if (t - w.idleAt < IDLE_MS) return;   // the clear lands after the turn ends; typing before it drops the clear
+      w.sent = size;
+      const r = await sending(w, 'send', id, MSG.reprompt(w.file));
+      if (!gotThrough(r)) { log(`swap "${w.title}": reprompt failed (${r.why}), trying again`); return; }
+      w.stage = 'resent'; w.at = t; save(); log(`swap "${w.title}": reprompt sent`);
+      return;
+    }
+    if (w.stage === 'resent') {
+      const nf = newIn(w.dir, w.askWall - 2000, w.old, [KEY, path.basename(w.file)]);
+      if (nf) { landedNew(s, w, nf); return; }
+      if (said(w.old, w.sent, KEY, 'user')) {   // the clear was dropped: the reprompt went into the old conversation
+        if (w.retried) { toNew(w, 'the clear was dropped twice'); return; }
+        w.from = sizeOf(w.old);
+        const r = await sending(w, 'send', id, MSG.clearRetry(w.file));
+        log(`swap "${w.title}": clear dropped; retry ask ${gotThrough(r) ? 'sent' : 'failed: ' + r.why}`);
+        w.retried = true; w.stage = 'casked'; w.at = t; w.idleAt = 0; save();
+        return;
+      }
+      if (t - w.at > LAND_MS) drop(s, w, 'clear', `${w.title}: the clear-swap reprompt was not found. Check the session.`);
       return;
     }
     if (w.stage === 'cancel') {
       if (t - w.at < CANCEL_MS || !idle(s)) return;
-      const f = api.transcriptOf(id); w.from = f ? fs.statSync(f).size : 0;
-      const r = await act('send', id, MSG.swap(w.cp));
-      if (!r.ok) { if (!w.sendWhy || w.sendWhy !== r.why) log(`swap "${w.title}": ask failed (${r.why}), trying again`); w.sendWhy = r.why; return; }
+      const f = api.transcriptOf(id); w.from = f ? sizeOf(f) : 0;
+      const r = await sending(w, 'send', id, MSG.swap(w.cp));
+      if (!gotThrough(r)) { sendFailed(s, w, 'ask', r); return; }
       w.stage = 'asked'; w.at = t; save(); log(`swap "${w.title}": asked for SWAP-READY`);
       return;
     }
     if (w.stage === 'asked') {
       if (readyIn(id, w.from)) { w.stage = 'ready'; w.at = t; save(); log(`swap "${w.title}": SWAP-READY`); return; }
-      if (t - w.at > READY_MS) { delete st.swaps[id]; skip(s); save(); warn('ready:' + id, `${w.title} did not reply SWAP-READY within 15 minutes. Swap it by hand.`); }
+      if (t - w.at > READY_MS) drop(s, w, 'ready', `${w.title} did not reply SWAP-READY within 15 minutes. Swap it by hand.`);
       return;
     }
     if (w.stage === 'ready') {
       if (!idle(s)) return;
       const rn = await act('manage', id, 'rename', w.title + ' (old)');
-      if (!rn.ok) { log(`swap "${w.title}": rename to (old) failed (${rn.why}), trying again`); return; }
+      if (!rn.ok) { log(`swap "${w.title}": rename to (old) failed (${rn.why}), trying again`); if (t - w.at > READY_MS) drop(s, w, 'start', `Could not rename ${w.title} for its swap: ${rn.why}.`); return; }
       const r = await act('new', w.folder, w.model, MSG.fresh(w.cp));
       if (!r.ok) {
         log(`swap "${w.title}": start failed (${r.why})`);
         await act('manage', id, 'rename', w.title);
-        delete st.swaps[id]; skip(s); save();
-        warn('start:' + id, `Could not start a fresh ${w.title}: ${r.why}.`);
+        drop(s, w, 'start', `Could not start a fresh ${w.title}: ${r.why}.`);
         return;
       }
       w.stage = 'naming'; w.newId = r.sessionId; w.at = t; save();
@@ -158,18 +218,78 @@ function create(api) {
       if (!n.ok) { if (t - w.at > 5 * 60000) { log(`swap "${w.title}": naming the fresh one failed (${n.why}); archiving the old one anyway`); } else return; }
       const a = await act('manage', id, 'archive');
       log(`swap "${w.title}": old one archived: ${a.ok ? 'ok' : a.why}`);
-      st.groups[id] = 'Archived'; delete st.swaps[id]; delete st.warned['line:' + id]; save();
+      st.groups[id] = 'Archived'; delete st.swaps[id]; unwarn(id); unlinkQ(w.file); save();
       api.cap(`${w.title} swapped to a fresh session.`);
     }
   }
+  // bytes of transcript `f` after `from` (at most the last 4 MB), '' when none or gone; the file is always closed
+  function readFrom(f, from, max = 4 << 20, head) {
+    let fd; try {
+      fd = fs.openSync(f, 'r'); const size = fs.fstatSync(fd).size; if (size <= from) return '';
+      const len = Math.min(size - from, max), b = Buffer.alloc(len), n = fs.readSync(fd, b, 0, len, head ? from : size - len);
+      return b.toString('utf8', 0, n);
+    } catch { return ''; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+  }
+  const sizeOf = f => { try { return fs.statSync(f).size; } catch { return 0; } };
   // SWAP-READY in an assistant line written since byte `from`
-  function readyIn(id, from) {
-    const f = api.transcriptOf(id); if (!f) return false;
-    try {
-      const size = fs.statSync(f).size; if (size <= from) return false;
-      const fd = fs.openSync(f, 'r'), b = Buffer.alloc(Math.min(size - from, 4 << 20)); fs.readSync(fd, b, 0, b.length, size - b.length); fs.closeSync(fd);
-      return b.toString('utf8').split('\n').some(l => l.includes('"assistant"') && l.includes('SWAP-READY'));
-    } catch { return false; }
+  const readyIn = (id, from) => said(api.transcriptOf(id), from, 'SWAP-READY');
+  // did `role` say `word` in transcript `f` since byte `from`? An assistant's text block with the word on a line of its own (or
+  // starting / ending one), a user message starting with it; thinking, tool inputs and quoted prose do not count
+  const bare = x => String(x).replace(/[*_`"'.!]+/g, '').trim();
+  function said(f, from, word, role = 'assistant') {
+    if (!f) return false;
+    // the word starts or ends the line ("SWAP-READY: committed", "Done, SWAP-READY"); words are plain (letters and '-')
+    const at = new RegExp(`^${word}(?![\\w-])|(?<![\\w-])${word}$`);
+    for (const l of readFrom(f, from).split('\n')) {
+      if (!l.includes(word) || !l.includes(`"${role}"`)) continue;
+      let j; try { j = JSON.parse(l); } catch { continue; }
+      const m = j && j.message; if (!m || m.role !== role) continue;
+      const c = m.content, texts = typeof c === 'string' ? [c] : Array.isArray(c) ? c.filter(x => x && x.type === 'text').map(x => String(x.text || '')) : [];
+      for (const x of texts) {
+        if (role === 'user' ? x.trim().startsWith(word) : x.split('\n').some(ln => { const b = bare(ln); return at.test(bare(ln)); })) return true;
+      }
+    }
+    return false;
+  }
+  // a transcript in `dir` born after `at` (not `old`), whose first 1 MB holds every string in `keys` -> its path
+  const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+  function newIn(dir, at, old, keys) {
+    let names = []; try { names = fs.readdirSync(dir).filter(n => n.endsWith('.jsonl')); } catch { return null; }
+    for (const n of names) {
+      const p = path.join(dir, n); if (same(p, old)) continue;
+      let fst; try { fst = fs.statSync(p); } catch { continue; }
+      if (fst.birthtimeMs < at) continue;
+      const txt = readFrom(p, 0, 1 << 20, true); if (keys.every(k => txt.includes(k))) return p;
+    }
+    return null;
+  }
+  // the reprompt landed in a new transcript: the session goes on there (same app session, same title and group)
+  function landedNew(s, w, nf) {
+    const id = s.sessionId, nid = path.basename(nf, '.jsonl');
+    api.setMoved(id, nf); st.moved[id] = { file: nf, at: Date.now() };   // kept, so a restart still reads the new conversation
+    if (s.reader) {   // the built-in reader names sessions by transcript: the new one takes over the tile
+      st.groups[nid] = st.groups[id] || 'Active'; st.alias[nid] = w.title; st.groups[id] = 'Cleared';
+      cpCache.set(nid, w.cp); delete st.skips[nid];
+    }
+    unlinkQ(w.file);
+    delete st.swaps[id]; delete st.skips[id]; unwarn(id); save();   // the fresh conversation starts with no skip mark
+    log(`swap "${w.title}": cleared, continues in ${path.basename(nf)}`);
+    api.cap(`${w.title} swapped (cleared).`);
+  }
+  // fall back to a fresh-session swap (ClearSwap_Spec): asks for SWAP-READY first, so the checkpoint is committed
+  function toNew(w, why) {
+    unlinkQ(w.file); delete w.file;
+    w.method = 'new'; w.stage = 'cancel'; w.at = 0; w.since = now(); delete w.failAt; save();
+    log(`swap "${w.title}": ${why}; swapping to a new session instead`);
+  }
+  // swaps whose session left the feed (archived, renamed away, out of the reader's list) end after READY_MS
+  function dropGone() {
+    const t = now();
+    for (const [id, w] of Object.entries(st.swaps)) {
+      if (sess(id)) { if (w.goneAt) { delete w.goneAt; save(); } continue; }
+      if (!w.goneAt) { w.goneAt = t; save(); }
+      else if (t - w.goneAt > READY_MS) { delete st.swaps[id]; unlinkQ(w.file); save(); log(`swap "${w.title}": its session left the list; swap dropped`); }
+    }
   }
   function skip(s) { st.skips[s.sessionId] = { tokens: (s.tokens || 0) + 50000, age: ageMin(s) + 60 }; }
 
@@ -247,6 +367,7 @@ function create(api) {
     try {
       schedTick();
       if (outside && !S().manageOutsideOk) warn('outside', 'Another session manager is running. Theseus holds its swaps and queue until you confirm in Theseus settings.');
+      if (swapsOn()) dropGone();
       if (swapsOn()) for (const s of feed.sessions) if (mine(s) && (s.group === 'Active' || st.swaps[s.sessionId])) { if (!api.blocked()) await swapStep(s); }
       if (!api.blocked()) await fill();
       for (const k of Object.keys(st.warned)) if (k.startsWith('line:') && !st.swaps[k.slice(5)]) { const s = sess(k.slice(5)); if (!s || !due(s)) { delete st.warned[k]; save(); } }
@@ -257,23 +378,26 @@ function create(api) {
 
   // ---- voice / menu entry points ----
   function cancel() {
-    const w = Object.entries(st.swaps).find(([, x]) => x.stage === 'cancel'); if (!w) return false;
+    const w = Object.entries(st.swaps).find(([k, x]) => x.stage === 'cancel' && !x.sending && sess(k)); if (!w) return false;
     const s = sess(w[0]); delete st.swaps[w[0]]; if (s) skip(s); save();
     log(`swap "${w[1].title}": cancelled`); api.cap(`Swap of ${w[1].title} cancelled.`); return true;
   }
-  function swapNow(id) {
+  function swapNow(id, method) {   // method 'new': "Swap to a new session" on the Queue chip
     const s = sess(id); if (!s) return { ok: false, why: 'unknown session' };
     if (!appCtl()) return { ok: false, why: 'App control is off' };
-    st.swaps[s.sessionId] = { stage: 'cancel', at: 0, title: baseTitle(s.title), folder: s.folder, model: s.model || null, cp: cpOf(s) }; save();
-    log(`swap "${s.title}": asked by hand`); setTimeout(tick, 50); return { ok: true };
+    const w0 = st.swaps[s.sessionId]; if (w0 && (w0.stage !== 'cancel' || w0.sending)) return { ok: false, why: 'a swap is already under way' };
+    const m = method === 'new' || S().swapMethod === 'new' ? 'new' : 'clear';
+    st.swaps[s.sessionId] = { stage: 'cancel', at: 0, method: m, title: baseTitle(s.title), folder: s.folder, model: s.model || null, cp: cpOf(s) }; save();
+    log(`swap "${s.title}": asked by hand (${m})`); setTimeout(tick, 50); return { ok: true };
   }
   function noSwap(id) {   // also the click-cancel (tile bar); too late once the fresh session is starting
     const s = sess(id); if (!s) return { ok: false, why: 'unknown session' };
-    const w = st.swaps[s.sessionId]; if (w && (w.stage === 'ready' || w.stage === 'naming')) return { ok: false, why: 'the swap is already under way' };
+    const w = st.swaps[s.sessionId]; if (w && (w.sending || (w.stage !== 'cancel' && w.stage !== 'asked'))) return { ok: false, why: 'the swap is already under way' };
     delete st.swaps[s.sessionId]; skip(s); save(); log(`swap "${s.title}": skipped until its next line`); return { ok: true }; }
 
   return {
     apply, tick, cancel, swapNow, noSwap, park, resume, order, logLines, cpOf,
+    moved: (id, f) => { if (st.moved[id]) { st.moved[id] = { file: f, at: Date.now() }; save(); } },   // a later move (a rewind) replaces the saved one
     mode: () => st.mode, setMode: m => setMode(m, 'picked'), on, outside: () => outside,
     state: () => ({ on: on(), mode: st.mode, queue: st.queue.slice(), swaps: Object.fromEntries(Object.entries(st.swaps).map(([k, v]) => [k, v.stage])), outside }),
     canceling: () => Object.values(st.swaps).some(x => x.stage === 'cancel' && now() - x.at < CANCEL_MS),

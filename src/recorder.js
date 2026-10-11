@@ -508,7 +508,7 @@ function create(opts = {}) {
       for (let i = 0; i < segs.length; i++) {
         const c = path.join(tmp, 'p' + String(i).padStart(3, '0') + '.ts');
         await fs.promises.copyFile(path.join(dir, segs[i].f), c);
-        list += `file '${c.replace(/\\/g, '/')}'\n`;
+        list += `file '${c.replace(/\\/g, '/').replace(/'/g, "'\\''")}'\n`;   // a ' in the path (a user named O'Brien) is escaped for the concat list
       }
     } catch (e) { fs.rmSync(tmp, { recursive: true, force: true }); throw e; }
     const lf = path.join(tmp, 'list.txt'); fs.writeFileSync(lf, list);
