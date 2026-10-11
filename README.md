@@ -40,6 +40,8 @@ your PC. When you turn on App control, it can also press buttons in the Claude d
 ### Voice
 - The assistant's name is its wake word. The default name is Theseus, and you can change it in Setup.
 - Speak with push-to-talk (hold Right Ctrl), with the wake word, or always on.
+- **Voice chat:** after the wake word, carry on talking. Once Theseus has replied it keeps listening for a few seconds
+  (Chat wait, 3–30 s), no wake word needed. "That's all" or silence ends the chat.
 - **Commands:**
   - Open a session ("open hand solver"), tile view, change modes.
   - "Tell <session> …" sends a message. It is read back first and sent after 3 s unless you say "cancel".

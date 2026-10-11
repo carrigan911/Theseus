@@ -390,6 +390,8 @@ namespace SsAudio
             new[] { "screenshot", "screenshot", "" }, new[] { "take a screenshot", "screenshot", "" },
             new[] { "stop talking", "hush", "" }, new[] { "be quiet", "hush", "" }, new[] { "quiet please", "hush", "" },
             new[] { "shush", "hush", "" }, new[] { "that's enough", "hush", "" }, new[] { "shut up", "hush", "" },
+            new[] { "that's all", "chatEnd", "" }, new[] { "thanks that's all", "chatEnd", "" }, new[] { "goodbye", "chatEnd", "" },
+            new[] { "bye", "chatEnd", "" }, new[] { "stop listening", "chatEnd", "" },
             new[] { "mode normal", "mode", "normal" }, new[] { "mode worker", "mode", "worker" },
             new[] { "mode night", "mode", "night" }, new[] { "mode weekend", "mode", "weekend" },
             new[] { "mode max performance", "mode", "performance" }, new[] { "mode max efficiency", "mode", "efficiency" }
@@ -437,15 +439,17 @@ namespace SsAudio
         public const double SureCmd = 0.85;   // a command under this goes past Whisper first (with Ask on)
         public const double MinQuestionS = 1.2;   // "Theseus" alone is about 0.8 s
         static DateTime followUntil = DateTime.MinValue;
-        static Grammar qFree; static Timer followT; static DateTime wakeHint = DateTime.MinValue;
+        static Grammar qFree, chatG; static Timer followT; static DateTime wakeHint = DateTime.MinValue;
 
-        static SpeechRecognitionEngine NewEngine(string m) { Grammar f; return NewEngine(m, out f); }
-        static SpeechRecognitionEngine NewEngine(string m, out Grammar free)
+        static SpeechRecognitionEngine NewEngine(string m) { Grammar f, c; return NewEngine(m, out f, out c); }
+        static SpeechRecognitionEngine NewEngine(string m, out Grammar free, out Grammar chat)
         {
             var e = new SpeechRecognitionEngine(new CultureInfo("en-US"));
             var g = MakeGrammar(m); g.Priority = 1;          // a known command beats a question
             e.LoadGrammar(g);
-            free = null;
+            free = null; chat = null;
+            // voice chat (VoiceChat_Spec): in wake mode the commands also work without the wake word while the follow window is open
+            if (m == "wake") { chat = MakeGrammar("chat"); chat.Name = "theseus-chat"; chat.Priority = 1; chat.Enabled = DateTime.UtcNow < followUntil; e.LoadGrammar(chat); }
             if (AskOn)
             {
                 var gb = new GrammarBuilder();
@@ -478,8 +482,9 @@ namespace SsAudio
             {
                 followUntil = DateTime.UtcNow.AddMilliseconds(Math.Max(0, ms));
                 if (qFree != null) qFree.Enabled = AskOn && ms > 0;
+                if (chatG != null) chatG.Enabled = ms > 0;
                 if (followT != null) followT.Dispose();
-                followT = ms > 0 ? new Timer(delegate { lock (vl) { if (qFree != null && DateTime.UtcNow >= followUntil) qFree.Enabled = false; } }, null, ms + 50, Timeout.Infinite) : null;
+                followT = ms > 0 ? new Timer(delegate { lock (vl) { if (DateTime.UtcNow >= followUntil) { if (qFree != null) qFree.Enabled = false; if (chatG != null) chatG.Enabled = false; } } }, null, ms + 50, Timeout.Infinite) : null;
             }
         }
 
@@ -512,7 +517,7 @@ namespace SsAudio
                 Teardown();
                 mode = m;
                 if (m == "off") return "\"mode\":\"off\"";
-                eng = NewEngine(m, out qFree);
+                eng = NewEngine(m, out qFree, out chatG);
                 var me = eng;
                 me.SpeechRecognized += OnRecognized;
                 me.SpeechRecognitionRejected += OnRejected;
@@ -613,7 +618,8 @@ namespace SsAudio
             if (!Parse(e.Result.Text, out cmd, out arg)) return;
             double conf = e.Result.Confidence;
             string txt = e.Result.Text;
-            if (conf < MinFor(m)) { J.Line("{\"event\":\"heard\",\"text\":" + J.S(txt) + ",\"confidence\":" + J.N(conf) + ",\"accepted\":false}"); return; }
+            bool viaChat = e.Result.Grammar != null && e.Result.Grammar.Name == "theseus-chat";
+            if (conf < (viaChat ? MinAlways : MinFor(m))) { J.Line("{\"event\":\"heard\",\"text\":" + J.S(txt) + ",\"confidence\":" + J.N(conf) + ",\"accepted\":false}"); return; }
             // wake: the phrase began with the wake word (always mode accepts phrases with or without it; main acts on stop / save only with it)
             bool wk = IsWake(txt);
             // not sure of it (the grammar picks its nearest phrase: "start a new session" came out "screenshot" at 0.69): with
@@ -626,7 +632,7 @@ namespace SsAudio
                 J.Line("{\"event\":\"question\",\"wav\":" + J.S(p) + ",\"sec\":" + J.N(e.Result.Audio.Duration.TotalSeconds) + ",\"confidence\":" + J.N(conf) + ",\"follow\":false,\"guess\":{\"cmd\":" + J.S(cmd) + ",\"arg\":" + J.S(arg) + ",\"text\":" + J.S(txt) + ",\"confidence\":" + J.N(conf) + ",\"wake\":" + J.B(wk) + "}}");
                 return;
             }
-            J.Line("{\"event\":\"command\",\"cmd\":" + J.S(cmd) + (arg != "" ? ",\"arg\":" + J.S(arg) : "") + ",\"text\":" + J.S(txt) + ",\"confidence\":" + J.N(conf) + ",\"wake\":" + J.B(wk) + "}");
+            J.Line("{\"event\":\"command\",\"cmd\":" + J.S(cmd) + (arg != "" ? ",\"arg\":" + J.S(arg) : "") + ",\"text\":" + J.S(txt) + ",\"confidence\":" + J.N(conf) + ",\"wake\":" + J.B(wk) + (viaChat ? ",\"chat\":true" : "") + "}");
         }
 
         // recognition ended: the stop we asked for (ptt key released), or the end of a wave file; the mic is let go
@@ -714,8 +720,9 @@ namespace SsAudio
                         continue;
                     }
                     string cmd, arg; bool known = Parse(r.Text, out cmd, out arg);
-                    bool ok = known && r.Confidence >= MinFor(m);
-                    results.Add("{\"cmd\":" + J.S(cmd) + ",\"arg\":" + J.S(arg) + ",\"text\":" + J.S(r.Text) + ",\"confidence\":" + J.N(r.Confidence) + ",\"wake\":" + J.B(IsWake(r.Text)) + ",\"accepted\":" + J.B(ok) + "}");
+                    string gn = r.Grammar == null ? "" : r.Grammar.Name;
+                    bool ok = known && r.Confidence >= (gn == "theseus-chat" ? MinAlways : MinFor(m));
+                    results.Add("{\"cmd\":" + J.S(cmd) + ",\"arg\":" + J.S(arg) + ",\"text\":" + J.S(r.Text) + ",\"confidence\":" + J.N(r.Confidence) + ",\"wake\":" + J.B(IsWake(r.Text)) + ",\"accepted\":" + J.B(ok) + ",\"grammar\":" + J.S(gn) + "}");
                 }
             }
             return "\"results\":[" + string.Join(",", results.ToArray()) + "],\"rejected\":[" + string.Join(",", rejected.ToArray()) + "]";

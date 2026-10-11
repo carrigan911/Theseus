@@ -237,6 +237,8 @@
   <div class="row"><label>Listen<small id="voiceNote">Offline, built-in Windows recognition</small></label>
     <select data-k="voiceCmd"><option value="off">Off</option><option value="ptt">Push-to-talk</option><option value="wake">Wake word</option><option value="always">Always on</option></select></div>
   <div class="row"><label><small>Push-to-talk: hold Right Ctrl and speak. Wake word: say "<span class="nm">Theseus</span>", then the command. Commands: system status, mute mic, unmute mic, next output, next mic, start recording, stop recording, save replay, screenshot, mode &lt;name&gt;. Stop talking / be quiet / shush (cuts the voice). Sessions (with Ask on): show the tiles / tile view, fold the tiles, type &lt;text&gt; / send it / clear it (the open card), close the card, next tile, previous tile, scroll up / down, open in Claude, what is &lt;title&gt; doing, who needs me, how full is &lt;title&gt;, what is working, change voice, speak faster / slower, turn speech on / off, turn alerts on / off, undo that, open &lt;title&gt;, new session / new task, new session in &lt;project&gt; &lt;task&gt; (its conversation opens once started), tell &lt;title&gt; &lt;message&gt;, what did &lt;title&gt; say, stop &lt;title&gt;.</small></label></div>
+  <div class="row"><label>Voice chat<small>After the wake word, Theseus keeps listening once it has replied: carry on without the wake word. "That's all" or silence ends it (Wake word and Always on)</small></label><input type="checkbox" data-k="voiceChat"></div>
+  <div class="row"><label>Chat wait<small>How long it listens after each reply</small></label><input type="range" min="3" max="30" step="1" data-k="chatWait" data-num data-unit="s"><span class="val"></span></div>
   <h2 data-addon="whisper">Voice questions</h2>
   <div class="row" data-addon="whisper"><label>Questions<small>"<span class="nm">Theseus</span>" + any question that is not a command (push-to-talk: just ask). Claude answers; local Whisper hears it</small></label><input type="checkbox" data-k="voiceAsk"></div>
   <div class="row" data-addon="whisper"><label>Let it act<small>Claude may open, start, message, answer and stop sessions and run PC actions when you ask. Sending, starting, answering and stopping are read back first, with time to say cancel</small></label><input type="checkbox" data-k="askActions"></div>
@@ -341,7 +343,7 @@ function show(s) {
     const v = s[el.dataset.k];
     if (editing(el)) continue;
     if (el.type === 'checkbox') el.checked = !!v; else el.value = String(v);
-    const val = el.nextElementSibling; if (val && val.classList.contains('val')) val.textContent = Number(v).toFixed(2);
+    const val = el.nextElementSibling; if (val && val.classList.contains('val')) val.textContent = el.dataset.unit ? v + ' ' + el.dataset.unit : Number(v).toFixed(2);
   }
 }
 for (const el of els) {
@@ -349,7 +351,7 @@ for (const el of els) {
   el.addEventListener(ev, () => {
     const v = el.type === 'checkbox' ? el.checked : 'num' in el.dataset ? (el.type === 'number' ? num(el) : Number(el.value)) : el.value;
     if (v == null) return;
-    const val = el.nextElementSibling; if (val && val.classList.contains('val')) val.textContent = Number(v).toFixed(2);
+    const val = el.nextElementSibling; if (val && val.classList.contains('val')) val.textContent = el.dataset.unit ? v + ' ' + el.dataset.unit : Number(v).toFixed(2);
     window.sphere.setSettings({ [el.dataset.k]: v });
     if (el.dataset.k === 'voiceCycle') document.getElementById('cycleRow').style.display = document.getElementById('cycleTestRow').style.display = v ? '' : 'none';
   });

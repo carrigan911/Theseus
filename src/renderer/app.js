@@ -87,6 +87,8 @@ let autoFold = true, keepCardsOpen = true, CLOSE_MS = 3000, FRAME_MS = 33, IDLE 
 let onTop = false, closeAt = 0, over = false, spreadOn = false, spread = 0, talking = false, level = 0.06, last = 0, spin = 1, keysOn = false;
 let captionOn = true, capOff = 0, askCap = null, askPulse = false;   // speech caption, Voice Ask caption + thinking pulse (below)
 const cap = document.body.appendChild(document.createElement('div')); cap.id = 'cap';
+const lis = document.body.appendChild(document.createElement('div')); lis.id = 'lis'; lis.textContent = 'Listening…';   // voice chat window (below)
+let chatOn = false, lisT = 0;
 const persp = () => 6 / (6 - 1.15 * scale);      // flat rows sit nearer the camera than the sphere centre
 function inside(x, y) {
   if (!spreadOn) return Math.hypot(x - cx, y - cy) <= scale * pxPerUnit;
@@ -264,7 +266,7 @@ function syncFold(now) {
 // (the clocks keep going, frames are only drawn less often)
 let occluded = false, timer = 0, lastT = 0;
 window.sphere.onOccluded?.(v => { occluded = !!v; if (!occluded) wake(); });
-const restful = () => !askPulse && !spreadOn && spread === 0 && !over && !closeAt && !(talking && talking.on) && Math.abs(level - IDLE) < 0.01 && Math.abs(scaleTarget - scale) < 1e-3;
+const restful = () => !askPulse && !chatOn && !spreadOn && spread === 0 && !over && !closeAt && !(talking && talking.on) && Math.abs(level - IDLE) < 0.01 && Math.abs(scaleTarget - scale) < 1e-3;
 function paceMs() {
   if (!restful()) return FRAME_MS;
   if (occluded) return 500;
@@ -300,7 +302,7 @@ function frame(t) {
   // speaking: the core follows the voice's loudness (pauses fall back to the idle glow); hover / open rows: full
   let voice = 0;
   if (talking && talking.on && glowOnSpeech) voice = talking.env ? talking.env[Math.floor((Date.now() - talking.start) / talking.step)] || 0 : 1;
-  const think = askPulse && !(talking && talking.on) ? 0.3 * (0.5 - 0.5 * Math.cos(t / 1000 * Math.PI)) : 0;   // Voice Ask thinking: a slow breath
+  const think = (askPulse || chatOn) && !(talking && talking.on) ? (askPulse ? 0.3 : 0.15) * (0.5 - 0.5 * Math.cos(t / 1000 * Math.PI)) : 0;   // Voice Ask thinking: a slow breath; a chat listening: a softer one
   const target = over || spreadOn ? 1 : IDLE + (1 - IDLE) * Math.max(voice, think);
   level += (target - level) * Math.min(1, dt * (target > level ? 25 : talking && talking.on ? 9 : 4));
   sphere.setMotion(modeMotion(), dt);
@@ -806,6 +808,14 @@ window.sphere.onAsk?.(a => {
   wake();
 });
 window.sphere.onTalking(t => { talking = t; caption(t); wake(); });
+// voice chat (VoiceChat_Spec): while the window listens, "Listening…" under the sphere (under the caption when one is up)
+function placeLis() {
+  const r = scale * pxPerUnit, below = cy + r + 12, c = cap.classList.contains('on') ? cap.getBoundingClientRect() : null;
+  lis.style.left = cx + 'px'; lis.style.top = (c && c.bottom > below - 4 ? c.bottom + 6 : below) + 'px';
+  lis.classList.toggle('on', chatOn && !spreadOn);
+  if (chatOn) lisT = setTimeout(placeLis, 250);
+}
+window.sphere.onChat?.(c => { chatOn = !!(c && c.on); clearTimeout(lisT); placeLis(); wake(); });
 ready = true; labelScale();
 // test hook (SPHERE_CONSOLE=<sessionId>): spread the rows and open that session's view once the feed is in
 window.sphere.consoleAuto?.().then(id => {

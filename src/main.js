@@ -23,7 +23,7 @@ const defaults = {
   side: 'left', display: 'primary', glow: '#3da5ff',
   fps: 30, renderScale: 1.5, labelRes: 1024,                 // frame cap (0 = display rate), supersampling, label pixels
   closeDelay: 3, spinMinutes: 2, idleGlow: 0.3,             // fold-back delay (s), one turn every N min (0 = still), idle core
-  autoFold: true, keepCardsOpen: true, tileActivity: true, contextRing: true, speechCaption: true, voiceAsk: true, askActions: true, sessionTools: true, sessionSpeak: true, sessionsMessage: false, askWeb: true, askSpeak: true, alertFinished: true, alertWaiting: true, alertPermission: true, claudeTray: false, tileWear: 0, tileSwap: 6, tileWearPreview: false, tileSwapPreview: false,   // tile rows fold back after the delay; an open card or menu stays until closed; working / waiting / idle looks
+  autoFold: true, keepCardsOpen: true, tileActivity: true, contextRing: true, speechCaption: true, voiceAsk: true, voiceChat: true, chatWait: 8, askActions: true, sessionTools: true, sessionSpeak: true, sessionsMessage: false, askWeb: true, askSpeak: true, alertFinished: true, alertWaiting: true, alertPermission: true, claudeTray: false, tileWear: 0, tileSwap: 6, tileWearPreview: false, tileSwapPreview: false,   // tile rows fold back after the delay; an open card or menu stays until closed; working / waiting / idle looks
   glowOnSpeech: true, voice: 'bm_lewis', voiceSpeed: 1.0, voiceCycle: false, voiceCycleList: [], voiceCycleMgr: '',   // talking glow; EchoStatus default voice (stateoice.json)
   autostart: false,
   sphereSize: 'medium', sphereGrowth: true, emptySpots: 'tiles', rowTileSize: 'large',   // small / medium / large / xlarge; growth: the sphere grows with the session count
@@ -69,7 +69,7 @@ const VOICE = v => typeof v === 'string' && /^[a-z]{2}_[a-z0-9_]{1,30}$/i.test(v
 const RULES = {
   side: en('left', 'right', 'full'), display: v => typeof v === 'string' && v.length <= 40 ? v : typeof v === 'number' && isFinite(v) ? String(v) : undefined,
   glow: col, fps: nm(0, 240), renderScale: nm(0.5, 4), labelRes: v => { v = nm(256, 4096)(v); return v === undefined ? v : Math.round(v); },
-  closeDelay: nm(0, 60), spinMinutes: nm(0, 120), idleGlow: nm(0, 1), autoFold: bl, keepCardsOpen: bl, claudeTray: bl, tileActivity: bl, contextRing: bl, speechCaption: bl, voiceAsk: bl, askActions: bl, sessionTools: bl, sessionSpeak: bl, sessionsMessage: bl, askWeb: bl, askSpeak: bl, alertFinished: bl, alertWaiting: bl, alertPermission: bl, tileWear: v => { v = nm(0, 12)(v); return v === undefined ? v : Math.round(v); }, tileSwap: en(1, 2, 3, 4, 5, 6), tileWearPreview: bl, tileSwapPreview: bl, glowOnSpeech: bl,
+  closeDelay: nm(0, 60), spinMinutes: nm(0, 120), idleGlow: nm(0, 1), autoFold: bl, keepCardsOpen: bl, claudeTray: bl, tileActivity: bl, contextRing: bl, speechCaption: bl, voiceAsk: bl, askActions: bl, sessionTools: bl, sessionSpeak: bl, sessionsMessage: bl, askWeb: bl, askSpeak: bl, voiceChat: bl, chatWait: nm(3, 30), alertFinished: bl, alertWaiting: bl, alertPermission: bl, tileWear: v => { v = nm(0, 12)(v); return v === undefined ? v : Math.round(v); }, tileSwap: en(1, 2, 3, 4, 5, 6), tileWearPreview: bl, tileSwapPreview: bl, glowOnSpeech: bl,
   voice: VOICE, voiceSpeed: nm(0.5, 2), voiceCycle: bl, voiceCycleList: v => Array.isArray(v) ? v.filter(x => VOICE(x)).slice(0, 80) : undefined,
   voiceCycleMgr: v => typeof v === 'string' && v.length <= 100 ? v : undefined, autostart: bl,
   sphereSize: en('small', 'medium', 'large', 'xlarge'), sphereGrowth: bl, emptySpots: en('tiles', 'open'), rowTileSize: en('large', 'medium', 'small'), tileAlign: en('left', 'center', 'right'), flatShape: en('regular', 'hexagon'), coreFollowsMode: bl, modeMotion: bl, spikeStrength: nm(0, 2),
@@ -1647,7 +1647,58 @@ if (gotLock) app.whenReady().then(() => {
   }
 
   // ---- voice commands (the helper recognises; we act and answer through speak.ps1 plus a strip notice) ----
+  // ---- voice chat (VoiceChat_Spec): a turn begun with the wake word (any turn in Always on, or one heard in the window) keeps
+  // listening after the reply for chatWait s, no wake word needed; each turn restarts it, silence or "that's all" ends it ----
+  const chat = { active: false, listening: false, gen: 0, timer: 0 };
+  const chatVc = () => (process.env.SPHERE_USERDATA && process.env.SPHERE_CHAT_MODE) || settings.voiceCmd;   // tests: a listen mode for the chat without opening the mic
+  const chatMode = () => !!audio && settings.voiceChat !== false && (chatVc() === 'wake' || chatVc() === 'always');
+  const CHAT_END_RE = /^(?:(?:ok(?:ay)? |thanks? |thank you )?(?:that s all|that is all)|goodbye|good bye|bye(?: bye)?|stop listening)$/;
+  function chatTurn(started) {   // a voice turn begins: true when its reply should open the window
+    if (!chatMode() || !(started || chat.active || chatVc() === 'always')) return false;
+    chat.gen++; clearTimeout(chat.timer);
+    if (!chat.active) log('chat start');
+    chat.active = true;
+    if (chat.listening) { chat.listening = false; toWin('chat', { on: false }); }
+    return true;
+  }
+  // after the reply (the say queue, then any send / stop / quiz window) the window opens
+  function afterTurn() {
+    const g = ++chat.gen;
+    (async () => {
+      await sayP.catch(() => {});
+      for (let i = 0; i < 120 && vPend && g === chat.gen; i++) await new Promise(r => setTimeout(r, 500));
+      await sayP.catch(() => {});
+      if (g !== chat.gen || !chat.active) return;
+      const ms = Math.round((settings.chatWait || 8) * 1000);
+      chat.listening = true; audio.follow(ms).catch(() => {}); toWin('chat', { on: true, ms }); log(`chat open ${ms}`);
+      chat.timer = setTimeout(() => { if (g === chat.gen) chatEnd('timeout'); }, ms + 100);
+    })();
+  }
+  function chatEnd(why) {
+    chat.gen++; clearTimeout(chat.timer);
+    const was = chat.active; chat.active = false;
+    if (chat.listening) { chat.listening = false; toWin('chat', { on: false }); }
+    if (audio) audio.follow(0).catch(() => {});
+    if (was) log(`chat end (${why})`);
+    if (why === 'phrase') { vCap('', 'Okay.'); vSay('Okay.'); }
+  }
+  // an alert or a session's line while the window listens: closed while it speaks (so it is not heard as a turn), then reopened
+  function chatPause(p) {
+    if (!chat.listening) return;
+    chat.gen++; clearTimeout(chat.timer); chat.listening = false; toWin('chat', { on: false }); audio.follow(0).catch(() => {});
+    log('chat paused'); Promise.resolve(p).then(afterTurn, afterTurn);
+  }
   async function runCommand(c) {
+    if (!c || typeof c.cmd !== 'string') return;
+    if (c.cmd === 'chatEnd') { if (chat.active) chatEnd('phrase'); else log('voice: chatEnd ignored (no chat)'); return; }
+    const inChat = !c.quiet && chatTurn(c.wake || c.chat || chat.listening);
+    try {
+      // a chat window hears without the wake word: ending a recording or saving the replay still needs it
+      if ((c.cmd === 'recStop' || c.cmd === 'saveReplay') && c.chat && !c.wake) { log(`voice: ${c.cmd} ignored (chat, no wake word)`); return; }
+      return await runCommand0(c);
+    } finally { if (inChat) afterTurn(); }
+  }
+  async function runCommand0(c) {
     if (!c || typeof c.cmd !== 'string') return;
     const speak = c.quiet ? () => {} : speak0;   // Ask's tools: Ask's own reply says it
     log(`voice: ${c.cmd}${c.arg ? ' ' + c.arg : ''} "${c.text || ''}" (${c.confidence})`);
@@ -1984,7 +2035,7 @@ if (gotLock) app.whenReady().then(() => {
       b.permission.length && `${and(b.permission)} ${b.permission.length > 1 ? 'ask' : 'asks'} permission.`].filter(Boolean);
     if (!parts.length) return;
     const line = parts.join(' '); log('alert: ' + line);
-    vCap('', line); if (settings.askSpeak) say(line);
+    vCap('', line); if (settings.askSpeak) chatPause(say(line));
   }
 
   // answers the feed has: no Claude call (about 1 s instead of 4 to 5)
@@ -2284,7 +2335,7 @@ if (gotLock) app.whenReady().then(() => {
       if (Date.now() - (spokeAt.get(k) || 0) < 8000) throw new Error('This session spoke a moment ago: wait a few seconds.');
       spokeAt.set(k, Date.now());
       vCap('', `${me.title}: ${t}`);
-      if (settings.sessionSpeak !== false) say(t);
+      if (settings.sessionSpeak !== false) chatPause(say(t));
       return settings.sessionSpeak !== false ? 'Said.' : 'Shown as a caption (the user turned session speech off).';
     },
     caption: (a, me) => { vCap('', `${me.title}: ${clip(a.text)}`); return 'Shown.'; },
@@ -2375,7 +2426,7 @@ if (gotLock) app.whenReady().then(() => {
     // q.guess: a command the grammar was unsure of; it runs as heard when Whisper cannot check it
     const asHeard = () => { log(`voice: ${q.guess.cmd} unchecked`); runCommand(q.guess); };
     if (asking || !(askOn() || q.test && asker)) { rm(); if (q.guess) asHeard(); return; }   // q.test: a typed question from the test hook (no Whisper)
-    asking = true; const t0 = Date.now();
+    asking = true; const t0 = Date.now(); const inChat = chatTurn(true);
     try {
       let text; if (q.test) text = q.text; else try { text = (await whisper.transcribe(q.wav)).text; } catch (e) { if (!q.guess) throw e; asHeard(); return; } finally { rm(); }
       text = String(text || '').replace(wakeRe(), '').trim();
@@ -2383,6 +2434,7 @@ if (gotLock) app.whenReady().then(() => {
       if (q.guess) log(`voice: unsure ${q.guess.cmd} "${q.guess.text}" (${q.guess.confidence}), Whisper heard "${text}"`);
       else if (!q.test) log(`voice: Whisper heard "${text}"`);
       if (voicePending(n)) return;                                               // "cancel" / "yes" for a voice reply or stop
+      if (chat.active && CHAT_END_RE.test(n)) { chatEnd('phrase'); return; }      // "that's all", "goodbye"
       if (!phrases) phrases = await audio.phrases().catch(() => null);
       const hit = (phrases || []).find(p => near(norm(p[0]), n));   // Whisper spellings: "mode knight", "mute mike"
       if (hit) { log(`ask: "${text}" is a command`); runCommand({ cmd: hit[1], arg: hit[2], text, confidence: 1, wake: true }); return; }
@@ -2402,13 +2454,13 @@ if (gotLock) app.whenReady().then(() => {
       }
       const d = new Date().toDateString(); if (d !== askDay) { askDay = d; askCount = 0; }
       log(`ask #${++askCount} today: "${text}" -> ${r.model}${r.escalated ? ' (escalated)' : ''}${r.web ? ' +web' : ''}, claude ${r.ms} ms, total ${Date.now() - t0} ms`);
-      askHist = [...askHist, { q: text, a: r.text }].slice(-2);
+      askHist = [...askHist, { q: text, a: r.text }].slice(chat.active ? -4 : -2);   // a chat remembers a little more
       if (q.test) log('ask answer: ' + r.text);
       toWin('ask', { state: 'answer', q: text, text: r.text, spoken: settings.askSpeak });
-      const follow = () => { if (ctx.queue.length) runQueued(ctx); else if (askOn()) audio.follow(8000).catch(() => {}); };   // a follow-up needs no wake word for 8 s
+      const follow = () => { if (ctx.queue.length) runQueued(ctx); else if (!inChat && askOn()) audio.follow(8000).catch(() => {}); };   // a follow-up needs no wake word for 8 s (a chat opens its own window)
       if (settings.askSpeak) say(asker.spoken(r.text)).then(follow); else follow();
     } catch (e) { log('ask: ' + (e && e.message)); toWin('ask', { state: 'error', q: '', text: "I couldn't hear the question." }); }
-    finally { asking = false; askCtx = null; }
+    finally { asking = false; askCtx = null; if (inChat) afterTurn(); }
   }
   if (audio) {
     audio.on('question', q => { if (q && typeof q.wav === 'string') onQuestion(q); });
@@ -2470,6 +2522,7 @@ if (gotLock) app.whenReady().then(() => {
     if ('stripPos' in p) placeStrip();
     if ('sysReadout' in p || 'sysAlerts' in p) { if (needSys()) refreshSys(true); }
     if ('voiceCmd' in p) listenNow();
+    if (('voiceCmd' in p || 'voiceChat' in p) && chat.active && !chatMode()) chatEnd('settings');
     if ('name' in p && audio) audio.wake(NAME()).catch(() => {});
     if ('voiceCmd' in p || 'voiceAsk' in p || ADDON_KEYS.some(k => k in p)) askMode();
     if (ADDON_KEYS.some(k => k in p) && needSys()) refreshSys(true);
@@ -2496,10 +2549,10 @@ if (gotLock) app.whenReady().then(() => {
   setInterval(() => { const k = JSON.stringify(P.addons()); if (k !== addonKey) { addonKey = k; pushSettings(); onSettingsChanged({ addons: true }); } }, 20000);
 
   // ---- test hooks: STRIP_SHOTS="<dir>;<count>;<ms apart>" pictures of the strip / toast / settings windows (first after 6 s);
-  // STRIP_SCRIPT="3000:muteMic,5000:voice:status,6000:voice:mode:worker,9000:ask:q1.wav" runs actions at those times (ask: a wave in %TEMP%SessionSphere, ask:<wav>:<cmd> as an unsure command; askq:<text> a typed question; send:<sessionId>:<text> types into that session, SPHERE_SEND_OK=1 needed; vnew:<id>:<title> opens a just-started session's card; hear:<wav in SPHERE_USERDATA> listens to that file as the mic, always mode)
+  // STRIP_SCRIPT="3000:muteMic,5000:voice:status,6000:voice:mode:worker,9000:ask:q1.wav" runs actions at those times (ask: a wave in %TEMP%SessionSphere, ask:<wav>:<cmd> as an unsure command; askq:<text> a typed question; send:<sessionId>:<text> types into that session, SPHERE_SEND_OK=1 needed; vnew:<id>:<title> opens a just-started session's card; hear:<wav in SPHERE_USERDATA> listens to that file as the mic, always mode); chat:<cmd>[:<arg>] / chatq:<text> as heard in an open voice chat window (ignored when it is closed)
   if (process.env.STRIP_SCRIPT) for (const it of process.env.STRIP_SCRIPT.split(',')) {
     const [ms, kind, a, b] = it.split(':');
-    setTimeout(() => { if (kind === 'askq') onQuestion({ text: a, test: true }); else if (kind === 'ask') { const s = path.join(app.getPath('temp'), 'SessionSphere', a), d = s + '.' + Date.now() + '.wav'; fs.copyFileSync(s, d); onQuestion({ wav: d, guess: b ? { cmd: b, arg: '', text: 'Theseus ' + b, confidence: 0.69, wake: true } : undefined }); } else if (kind === 'say') { const t = a, n = norm(t); log('say test: ' + t); if (!voicePending(n)) voiceSession(t, n).then(r => log('say test handled: ' + r)); } else if (kind === 'hear' && audio) { settings.voiceCmd = 'always'; audio.testInput(path.join(process.env.SPHERE_USERDATA || '', a)).then(() => audio.ask(askOn())).then(() => { listenNow(); log('hear test: ' + a + ', ask ' + askOn()); }); } else if (kind === 'vnew') openStarted({ sessionId: 'new:' + a, title: b }); else if (kind === 'send') sessionSend(a, b || null).then(r => log('send test: ' + JSON.stringify(r))); else if (kind === 'js' && process.env.SPHERE_USERDATA) win.webContents.executeJavaScript(fs.readFileSync(path.join(process.env.SPHERE_USERDATA, a), 'utf8')).then(r => log('js test: ' + JSON.stringify(r)), e => log('js test failed: ' + e.message)); else if (kind === 'voice') runCommand({ cmd: a, arg: b, text: 'test', confidence: 1, wake: true }); else act(kind, a ? (isNaN(+a) ? a : +a) : undefined); }, +ms);
+    setTimeout(() => { if (kind === 'askq') onQuestion({ text: a, test: true }); else if (kind === 'ask') { const s = path.join(app.getPath('temp'), 'SessionSphere', a), d = s + '.' + Date.now() + '.wav'; fs.copyFileSync(s, d); onQuestion({ wav: d, guess: b ? { cmd: b, arg: '', text: 'Theseus ' + b, confidence: 0.69, wake: true } : undefined }); } else if (kind === 'say') { const t = a, n = norm(t); log('say test: ' + t); if (!voicePending(n)) voiceSession(t, n).then(r => log('say test handled: ' + r)); } else if (kind === 'hear' && audio) { settings.voiceCmd = 'always'; audio.testInput(path.join(process.env.SPHERE_USERDATA || '', a)).then(() => audio.ask(askOn())).then(() => { listenNow(); log('hear test: ' + a + ', ask ' + askOn()); }); } else if (kind === 'vnew') openStarted({ sessionId: 'new:' + a, title: b }); else if (kind === 'send') sessionSend(a, b || null).then(r => log('send test: ' + JSON.stringify(r))); else if (kind === 'js' && process.env.SPHERE_USERDATA) win.webContents.executeJavaScript(fs.readFileSync(path.join(process.env.SPHERE_USERDATA, a), 'utf8')).then(r => log('js test: ' + JSON.stringify(r)), e => log('js test failed: ' + e.message)); else if (kind === 'voice') runCommand({ cmd: a, arg: b, text: 'test', confidence: 1, wake: true }); else if (kind === 'chat' || kind === 'chatq') { if (!chat.listening) log(`chat test: not listening, "${a}" ignored`); else if (kind === 'chat') runCommand({ cmd: a, arg: b, text: 'chat test', confidence: 1, wake: false, chat: true }); else onQuestion({ text: a, test: true, follow: true }); } else act(kind, a ? (isNaN(+a) ? a : +a) : undefined); }, +ms);
   }
   if (process.env.STRIP_SHOTS) {
     const [dir, count = 1, ms = 1000] = process.env.STRIP_SHOTS.split(';'); let i = 0;

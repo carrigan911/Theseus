@@ -73,6 +73,7 @@ contextBridge.exposeInMainWorld('sphere', {
   askTest: () => ipcRenderer.invoke('ask-test'),                                  // -> { ok, ms, text } or { ok: false, why }
   onVoiceOpen: cb => ipcRenderer.on('voice-open', (_e, a) => cb(a)),
   onVoiceCard: cb => ipcRenderer.on('voice-card', (_e, a) => cb(a)),           // { op: type / send / clear / close / next / prev / scroll / claude, text }           // { sessionId } (null: the New session form)
+  onChat: cb => ipcRenderer.on('chat', (_e, c) => cb(c)),                       // voice chat window { on, ms }
   onAsk: cb => ipcRenderer.on('ask', (_e, a) => cb(a)),                         // { state: thinking / answer / error, q, text }
   onNotice: cb => ipcRenderer.on('notice', (_e, text, ms) => cb(text, ms)),
   onLevels: cb => ipcRenderer.on('levels', (_e, l) => cb(l)),                    // strip meters: { mic, sys } 0..1 (null = not recorded), while recording
