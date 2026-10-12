@@ -14,7 +14,8 @@ const num = v => { const n = typeof v === 'string' && v.trim() ? Number(v) : v; 
 // a session's transcript may move (a rewind, a clear-swap): main tells the feed the file it continues in
 let resolve = (id, f) => f;
 const setResolve = fn => { resolve = typeof fn === 'function' ? fn : (id, f) => f; };
-const fileOf = s => typeof s.transcript === 'string' && s.transcript ? resolve(String(s.sessionId), s.transcript) : null;
+const { live } = require('./appsessions');   // the transcript the app says the session writes now (a clear moves it)
+const fileOf = s => { const f = live(String(s.sessionId), typeof s.transcript === 'string' && s.transcript ? s.transcript : null); return f ? resolve(String(s.sessionId), f) : null; };
 
 // the file as parsed JSON, or why not: 'absent' (no file) / 'bad' (empty, half-written, not JSON)
 function load() {
@@ -65,9 +66,25 @@ function archivedOf(list, taken, now = Date.now()) {
     });
 }
 
+// a stale feed (not written for STALE_MS: its manager stopped) keeps its sessions, and the sessions the built-in reader
+// finds that it does not list (changed within a day) are added as Ungrouped, so new work still shows. The scan is reused for a minute.
+const STALE_MS = 30 * 60000;
+let scanAt = 0, scanRaw = null;
+function withStale(f, raw) {
+  let m; try { m = fs.statSync(FEED()).mtimeMs; } catch { return f; }
+  if (!f || Date.now() - m < STALE_MS) return f;
+  if (!scanRaw || Date.now() - scanAt > 60000) { scanRaw = require('./sessions').scan({ days: 1 }); scanAt = Date.now(); }
+  // a clear-swap or a swap writes a new transcript under the same title: a title the feed lists, or one already added, is the same session
+  const listed = (raw.sessions || []).filter(s => s && typeof s === 'object'), base = t => String(t || '').replace(/\s*\(old\b[^)]*\)\s*$/i, '').trim();
+  const have = new Set(listed.map(s => String(s.sessionId))), titles = new Set(listed.map(s => base(s.title)));
+  const add = scanRaw.sessions.filter(s => {   // (newest first)
+    const t = base(s.title); if (have.has(String(s.sessionId)) || !t || titles.has(t)) return false; titles.add(t); return true; });
+  const extra = build({ sessions: add.map(s => ({ ...s, group: 'Ungrouped', reader: true })) });
+  return extra && extra.sessions.length ? { ...f, sessions: [...f.sessions, ...extra.sessions], stale: true } : { ...f, stale: true };
+}
 function readFeed() {
   const r = load();
-  return (r.raw !== undefined && build(r.raw)) || (r.err === 'absent' && build(rawNow = reader())) || { sessions: [], missing: true };
+  return (r.raw !== undefined && withStale(build(r.raw), r.raw)) || (r.err === 'absent' && build(rawNow = reader())) || { sessions: [], missing: true };
 }
 
 // onChange(feed) fires when the visible result changes; polls every 15 s plus fs.watch for instant feed edits.
@@ -80,7 +97,7 @@ function watch(onChange) {
     clearTimeout(tickT);
     if (stopped) return;
     try {
-      const r = load(), f = r.raw !== undefined ? build(r.raw) : null;
+      const r = load(), f = r.raw !== undefined ? withStale(build(r.raw), r.raw) : null;
       if (f) { good = true; absent = bad = 0; lastRaw = r.raw; rawNow = r.raw; return emit(f); }
       if (r.err === 'absent') { absent++; bad = 0; } else { bad++; absent = 0; }
       if (absent >= 2) { const raw = reader(); lastRaw = rawNow = raw; return emit(build(raw)); }   // the feed file is gone: the reader

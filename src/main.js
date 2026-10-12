@@ -542,8 +542,20 @@ if (gotLock) app.whenReady().then(() => {
     if (!r.ok || !r.names || !r.names.length) return;
     cstate.artifacts = [...new Set([...r.names, ...cstate.artifacts])].slice(0, 200); saveLists();
   }
-  ipcMain.handle('claude-snap', async e => {
+  // whether the Claude window is in front (cheap: no UI Automation), kept 1 s. While the user types there, the reads that walk
+  // Claude's window tree (snap, sidebar status) wait or slow down: each one stalls Claude's UI thread and typing stutters
+  let frontAt = 0, frontWas = false;
+  async function claudeFront() {
+    if (Date.now() - frontAt < 1000) return frontWas;
+    const f = await claudeUi.send({ cmd: 'fg' }, 3000).catch(() => null);
+    frontAt = Date.now(); frontWas = !!(f && f.claude); return frontWas;
+  }
+  let snapAt = 0;
+  ipcMain.handle('claude-snap', async (e, tick) => {
     if (!fromWin(e)) return null;
+    // the 4 s tick while the user is in the Claude app: keep the last read (in the chat card, read every 12 s)
+    if (tick && (!overlay || Date.now() - snapAt < 12000) && await claudeFront()) return { ...cstate, overlay: !!overlay };
+    snapAt = Date.now();
     let s = await claudeUi.send({ cmd: 'snap' });
     if (s.ok && !s.sidebar && !overlay && !cstate.nav.length && Date.now() - peeked > 600000) { peeked = Date.now(); s = await claudeUi.send({ cmd: 'peek' }); }
     if (s.ok) for (const k of Object.keys(cstate)) if (s[k] != null) cstate[k] = s[k];
@@ -705,7 +717,7 @@ if (gotLock) app.whenReady().then(() => {
   function transcriptOf(sessionId) {
     if (process.env.SPHERE_STRESS && sessionId === process.env.SPHERE_STRESS) return stressFile();
     if (newOnes.has(sessionId)) { const f = newOnes.get(sessionId).file; return fs.existsSync(f) ? f : null; }
-    const file = (feedSessions().find(x => String(x.sessionId) === sessionId) || {}).transcript;
+    const file = require('./appsessions').live(sessionId, (feedSessions().find(x => String(x.sessionId) === sessionId) || {}).transcript);
     const mv = moved.get(sessionId);
     if (mv) { if (born(mv) < 0) moved.delete(sessionId); else if (!(typeof file === 'string' && born(file) >= born(mv))) return mv; else moved.delete(sessionId); }
     return typeof file === 'string' && /\.jsonl$/i.test(file) && fs.existsSync(file) ? file : null;
@@ -989,7 +1001,8 @@ if (gotLock) app.whenReady().then(() => {
       for (const [id, n] of newOnes) files.set(id, n.file);
       for (const [id, f] of files) if (tw(f)) want.push(id);
       // each read costs ~0.04 cores at 2 s: every 2 s for the open conversation, every 6 s for the tiles
-      if (want.length && !want.includes(conId) && Date.now() - awAt < 5900) return;
+      // (every 6 s for all while the user types in the Claude app, see claudeFront)
+      if (want.length && Date.now() - awAt < 5900 && (!want.includes(conId) || await claudeFront())) return;
       const next = new Map();
       if (want.length) {
         awAt = Date.now();
@@ -2418,7 +2431,7 @@ if (gotLock) app.whenReady().then(() => {
     },
     list_sessions: listSessions, read_session: readSession, search_sessions: searchSessions,
     send_message: async (a, me) => {
-      if (!settings.sessionsMessage) throw new Error('The user has not allowed sessions to message each other (Theseus: Voice settings, "Sessions may message each other").');
+      if (!settings.sessionsMessage) throw new Error('The user has not allowed this Theseus tool (Theseus settings, "Sessions may message each other"). It covers only the Theseus send_message tool; the Claude app session messaging (SendMessage) is not affected.');
       const s = sessOf(a.session); if (me.s && s.sessionId === me.s.sessionId) throw new Error('That is this session.');
       const t = String(a.text || '').trim(); if (!t) throw new Error('no text given');
       const r = await sessionSend(s.sessionId, `[From ${me.title}] ${t}`); if (!r.ok) throw new Error(r.why);

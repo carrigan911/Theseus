@@ -24,7 +24,7 @@ contextBridge.exposeInMainWorld('sphere', {
   displays: () => ipcRenderer.invoke('displays'),
   feed: () => ipcRenderer.invoke('feed'),
   open: link => ipcRenderer.send('open', link),
-  claudeSnap: () => ipcRenderer.invoke('claude-snap'),
+  claudeSnap: tick => ipcRenderer.invoke('claude-snap', !!tick),
   thumb: title => ipcRenderer.invoke('thumb', title),
   overlayOpen: (rect, link) => ipcRenderer.invoke('overlay-open', rect, link),
   claudePress: (rect, name) => ipcRenderer.invoke('claude-press', rect, name),

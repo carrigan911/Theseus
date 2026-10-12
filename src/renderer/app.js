@@ -15,12 +15,14 @@ const envScene = new THREE.Scene(); envScene.background = new THREE.Color(0x1a1d
 for (const [x, y, z, w, h, i] of [[0, 5, 2, 8, 1, 6], [-6, 1, 2, 1, 5, 4], [6, 0, 3, 1, 4, 3], [0, -4, 3, 7, 1, 1.5]]) { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.2), new THREE.MeshBasicMaterial({ color: new THREE.Color(i, i, i) })); m.position.set(x, y, z); envScene.add(m); }
 // the WebGL renderer; a lost context (driver reset, GPU process restart) gets a fresh renderer, since the reflections
 // are a render target that a restored context would have lost. MSAA only below 1.5x render scale (supersampling covers it)
-let renderer = null, aaOn = true, lostT = 0;
+let renderer = null, aaOn = true, lostT = 0, softGL = false;   // softGL: WebGL in software (SwiftShader): render scale capped at 0.7
 function makeRenderer(aa) {
   clearTimeout(lostT);
   if (renderer) { const old = renderer; renderer = null; old.domElement.remove(); old.dispose(); old.forceContextLoss(); }
   try { renderer = new THREE.WebGLRenderer({ alpha: true, antialias: aa }); } catch (e) { console.error('WebGL', e); renderer = null; lostT = setTimeout(() => makeRenderer(aa), 3000); return; }
   aaOn = aa; renderer.setClearColor(0x000000, 0);
+  try { const gl = renderer.getContext(), x = gl.getExtension('WEBGL_debug_renderer_info'); softGL = /swiftshader|software|llvmpipe/i.test(String(x ? gl.getParameter(x.UNMASKED_RENDERER_WEBGL) : '')); } catch { softGL = false; }
+  if (softGL) console.warn('WebGL is in software: render scale capped at 0.7');
   document.body.prepend(renderer.domElement);
   const pmrem = new THREE.PMREMGenerator(renderer); scene.environment?.dispose(); scene.environment = pmrem.fromScene(envScene, 0.04).texture; pmrem.dispose();
   const cv = renderer.domElement;
@@ -76,7 +78,7 @@ function resize() {
   const w = innerWidth, h = innerHeight;
   if (renderer) {
     const cap = Math.min(Math.sqrt(MAX_PX / Math.max(1, w * h)), renderer.capabilities.maxTextureSize / Math.max(1, w, h));
-    renderer.setPixelRatio(Math.min(devicePixelRatio * renderScale, cap)); renderer.setSize(w, h);
+    renderer.setPixelRatio(Math.min(devicePixelRatio * (softGL ? Math.min(renderScale, 0.7) : renderScale), cap)); renderer.setSize(w, h);   // (perf pass 3: software 10 -> 17 fps)
   }
   camera.aspect = w / h; camera.updateProjectionMatrix();
   pxPerUnit = h / (2 * worldHalfH); cx = w / 2; cy = h / 2;
@@ -707,8 +709,8 @@ sRes.addEventListener('click', e => {
   openConsole(s, h);
 });
 let snapTok = 0, snapShown = 0;   // a slow older snapshot never overwrites a newer one (a slow one still shows when none newer came back)
-function refreshClaude() { const my = ++snapTok; window.sphere.claudeSnap().then(s => { if (my < snapShown || !s) return; snapShown = my; lastSnap = s; renderTop(s); markView(); }, () => {}); }
-setInterval(() => { if (spreadOn) refreshClaude(); }, 4000);
+function refreshClaude(tick) { const my = ++snapTok; window.sphere.claudeSnap(tick).then(s => { if (my < snapShown || !s) return; snapShown = my; lastSnap = s; renderTop(s); markView(); }, () => {}); }
+setInterval(() => { if (spreadOn) refreshClaude(true); }, 4000);
 window.sphere.onOverlayClosed(() => { if (rEditing) return; overlayOn = con.on; barCard = ''; rlist.style.display = 'none'; if (view === 'artifacts') showView('artifacts'); });   // fresh pictures
 // the Claude window's place over the background: centred on the panel (wide: across it), between the top groups and the bottom bar
 function overlayRect() {

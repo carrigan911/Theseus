@@ -37,7 +37,7 @@ const session = [
   { name: 'caption', description: 'Show a short line to the user as a caption on the sphere, without speaking.', inputSchema: obj({ text: str('the line (at most about 300 characters)') }, ['text']) },
   { name: 'needs_you', description: "Light this session's tile on the sphere as waiting on the user, with a short note why. It clears when the user opens the session or it starts working again.", inputSchema: obj({ note: str('why (a few words)') }, ['note']) },
   list_sessions, read_session, search_sessions,
-  { name: 'send_message', description: 'Send a message to another session, as from this one (it arrives marked with this session\'s title). Only when the user allowed sessions to message each other in Theseus.', inputSchema: obj({ session: SESSION, text: str('the message') }, ['session', 'text']) },
+  { name: 'send_message', description: 'Send a message to another session, as from this one (it arrives marked with this session\'s title). Only when the user allowed sessions to message each other in Theseus. That switch covers only this Theseus tool, never the Claude app session messaging (SendMessage).', inputSchema: obj({ session: SESSION, text: str('the message') }, ['session', 'text']) },
 ];
 
 module.exports = { ask, session, PC_ACTIONS, RESPONSES, MODES };

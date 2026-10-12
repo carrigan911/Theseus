@@ -141,14 +141,21 @@ function create(api) {
   function sendFailed(s, w, what, r) {
     if (w.sendWhy !== r.why) log(`swap "${w.title}": ${what} failed (${r.why}), trying again`); w.sendWhy = r.why;
     if (!w.failAt) { w.failAt = now(); save(); }
-    if (now() - w.failAt > READY_MS) drop(s, w, 'send', `Could not ask ${w.title} to swap for 15 minutes: ${r.why}. Swap it by hand.`);
+    if (now() - w.failAt > READY_MS) return drop(s, w, 'send', `Could not ask ${w.title} to swap for 15 minutes: ${r.why}. Swap it by hand.`);
+    // a draft in the reply box stays until the user sends or clears it, and each try turns the Claude app to that session:
+    // say so once and try again after 1, 2, 4 min (not every tick)
+    if (/draft/.test(r.why || '')) {
+      w.draftN = (w.draftN || 0) + 1; w.nextTry = now() + Math.min(4, 2 ** (w.draftN - 1)) * 60000; save();
+      warn('draft:' + s.sessionId, `${w.title} has unsent text in its reply box. Send or clear it so it can swap.`);
+    }
   }
   const gotThrough = r => r.ok || /^sent\b/.test(r.why || '');   // "sent, but it has not shown up yet" = typed, so never type it again
   // one App control call while the swap is marked as sending, so a cancel cannot slip in between the ask and its stage
-  async function sending(w, kind, ...a) { w.sending = true; try { const r = await act(kind, ...a); if (gotThrough(r)) delete w.failAt; return r; } finally { w.sending = false; } }
+  async function sending(w, kind, ...a) { w.sending = true; try { const r = await act(kind, ...a); if (gotThrough(r)) { delete w.failAt; delete w.nextTry; delete w.draftN; } return r; } finally { w.sending = false; } }
   let busy = false;
   async function swapStep(s) {
     const id = s.sessionId, w = st.swaps[id], t = now();
+    if (w && w.nextTry && t < w.nextTry) return;   // waiting out a draft (sendFailed)
     if (!w) {
       if (!due(s) || !idle(s)) return;
       // just swapped and already at the line (the line is below what a fresh session holds: tools and rules): swapping again
@@ -178,6 +185,7 @@ function create(api) {
       return;
     }
     if (w.stage === 'casked') {
+      followAsk(id, w);
       if (said(w.old, w.from, 'NO-CLEAR')) { toNew(w, 'it replied NO-CLEAR'); return; }
       if (t - w.at > READY_MS) { drop(s, w, 'clear', `${w.title} did not clear itself within 15 minutes. Swap it by hand.`); return; }
       const size = sizeOf(w.old);
@@ -206,14 +214,15 @@ function create(api) {
     }
     if (w.stage === 'cancel') {
       if (t - w.at < CANCEL_MS || !idle(s)) return;
-      const f = api.transcriptOf(id); w.from = f ? sizeOf(f) : 0;
+      const f = api.transcriptOf(id); w.from = f ? sizeOf(f) : 0; w.tf = f || null;
       const r = await sending(w, 'send', id, MSG.swap(w.cp));
       if (!gotThrough(r)) { sendFailed(s, w, 'ask', r); return; }
       w.stage = 'asked'; w.at = t; save(); log(`swap "${w.title}": asked for SWAP-READY`);
       return;
     }
     if (w.stage === 'asked') {
-      if (readyIn(id, w.from)) { w.stage = 'ready'; w.at = t; save(); log(`swap "${w.title}": SWAP-READY`); return; }
+      const tf = api.transcriptOf(id);   // (a new transcript since the ask: read it from its start)
+      if (readyIn(id, w.tf && tf && !same(tf, w.tf) ? 0 : w.from)) { w.stage = 'ready'; w.at = t; save(); log(`swap "${w.title}": SWAP-READY`); return; }
       if (t - w.at > READY_MS) drop(s, w, 'ready', `${w.title} did not reply SWAP-READY within 15 minutes. Swap it by hand.`);
       return;
     }
@@ -292,6 +301,18 @@ function create(api) {
       const txt = readFrom(p, 0, 1 << 20, true); if (keys.every(k => txt.includes(k))) return p;
     }
     return null;
+  }
+  // the app may carry on a conversation in a new transcript that opens with the clear ask itself (seen 10-11): its reply and
+  // turn end are written there, so the swap follows it (a file holding the reprompt is the cleared conversation: not this)
+  function followAsk(id, w) {
+    const f = api.transcriptOf(id);
+    if (!f || !w.old || same(f, w.old)) return;
+    let b = -1; try { b = fs.statSync(f).birthtimeMs; } catch {}
+    if (b < (w.askWall || 0) - 2000) return;
+    const head = readFrom(f, 0, 1 << 20, true);
+    if (head.includes(KEY) || !head.includes('Clear-swap: bring your checkpoint')) return;
+    log(`swap "${w.title}": the ask went on in ${path.basename(f)}; following it`);
+    w.old = f; w.dir = path.dirname(f); w.from = 0; w.idleAt = 0; save();
   }
   // the reprompt landed in a new transcript: the session goes on there (same app session, same title and group)
   function landedNew(s, w, nf) {
