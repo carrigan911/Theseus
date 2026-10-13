@@ -1,6 +1,6 @@
 # Theseus
 
-A desktop session sphere for your Claude Code sessions, for Windows. You can talk to it.
+A desktop companion app for Claude Code, for Windows. Full voice control, automatic session swaps, custom modes.
 
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/fullcircle_0)
 
