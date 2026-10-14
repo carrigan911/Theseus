@@ -2,10 +2,10 @@
 
 A desktop companion app for Claude Code, for Windows. Full voice control, automatic session swaps, custom modes.
 
-![Theseus: the sphere turning through its modes, the tile view, and two sessions being replaced](docs/demo.gif)
+![Theseus: the sphere through its modes, the tile view, sessions swapping themselves, and a new project](docs/demo.gif)
 
-*Demo sessions with made-up names. The sphere has six modes, spreads into the tile view, and two tiles are
-replaced by fresh sessions.*
+*Demo sessions with made-up names. The sphere has six modes, spreads into the tile view, swaps aging sessions on its own,
+groups a new project's sessions, and is controlled by voice. [Full narrated video, 60 fps](docs/demo.mp4).*
 
 **Unofficial.** Theseus is not made, endorsed or supported by Anthropic. It reads the session files Claude Code writes on
 your PC. When you turn on App control, it can also press buttons in the Claude desktop app for you.
