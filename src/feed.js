@@ -72,7 +72,7 @@ const STALE_MS = 30 * 60000;
 let scanAt = 0, scanRaw = null;
 function withStale(f, raw) {
   let m; try { m = fs.statSync(FEED()).mtimeMs; } catch { return f; }
-  if (!f || Date.now() - m < STALE_MS) return f;
+  if (!f || Date.now() - m < STALE_MS || process.env.SPHERE_DEMO) return f;
   if (!scanRaw || Date.now() - scanAt > 60000) { scanRaw = require('./sessions').scan({ days: 1 }); scanAt = Date.now(); }
   // a clear-swap or a swap writes a new transcript under the same title: a title the feed lists, or one already added, is the same session
   const listed = (raw.sessions || []).filter(s => s && typeof s === 'object'), base = t => String(t || '').replace(/\s*\(old\b[^)]*\)\s*$/i, '').trim();

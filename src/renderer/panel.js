@@ -12,6 +12,10 @@ export const GLOW = { value: new THREE.Color(0x3da5ff) };
 export const ENERGY = { value: new THREE.Color(0x3da5ff) };
 export const TIME = { value: 0 };
 export const SPREAD = { value: 0 };   // 0 on the shell .. 1 in the flat rows
+// start / close animations (TeleportFx_Spec), shared by every tile: HOLO x = hologram strength (-1 off), y = the world height
+// below which tiles are solid, z = that line's softness, w = its glow; IGLOW = blue light on every tile (FTL jump)
+export const HOLO = { value: new THREE.Vector4(-1, 0, 1, 0) };
+export const IGLOW = { value: 0 };
 
 // value noise from a small tiling texture: G is R moved by (37, 17) per z step, so one bilinear fetch gives two z slices
 // (the same smoothstep value noise as the old per-pixel hash, at one texture read per octave)
@@ -34,8 +38,12 @@ float vnoise(vec3 x) {
 }`;
 
 const COMMON = /* glsl */`
-uniform float uLevel, uParked, uSeed, uHasLabel, uBump, uTime, uGold, uHover, uFlare, uRipple, uHeat, uWork, uWait, uIdle, uRing;
+uniform vec3 uTint;
+uniform float uTintK;
+uniform float uLevel, uParked, uStuck, uDone, uSeed, uHasLabel, uBump, uTime, uGold, uHover, uFlare, uRipple, uHeat, uWork, uWait, uIdle, uRing;
 uniform vec3 uGlow, uEnergy;
+uniform vec4 uHolo; uniform float uIGlow;
+varying float vWy;
 uniform sampler2D uLabel;
 ${SWAP_DECL}
 varying vec2 vPUv;
@@ -87,6 +95,9 @@ const WEAR_BODY = /* glsl */`
   float field = inner * (0.05 + 0.09 * fbm2(q * 4.0 + vec2(0.0, uTime * 0.08)));
   vec3 core = mix(uEnergy, vec3(dot(uEnergy, vec3(0.3333))), uParked);
   core = mix(core, vec3(1.0, 0.7, 0.25), uGold);
+  core = mix(core, uTint * 1.15, uTintK);
+  core = mix(core, vec3(0.3, 1.0, 0.45), uDone * 0.6);   // done (Autonomy part 4a): a steady green
+  core = mix(core, vec3(1.0, 0.5, 0.08), uStuck * (0.65 + 0.35 * sin(uTime * 2.5)));   // stuck (Autonomy part 1): a slow amber pulse
   vec3 amber = vec3(1.0, 0.62, 0.12), red = vec3(1.0, 0.14, 0.08);
   vec3 glc = core, emit = vec3(0.0); float glow = energy;
 #if WEAR == 1 || WEAR == 2 || WEAR == 4 || WEAR == 6 || WEAR == 7 || WEAR == 8 || WEAR == 10 || WEAR == 12
@@ -231,6 +242,7 @@ const WEAR_BODY = /* glsl */`
   gEmit = emit * mix(1.0, 0.18, uParked);
   gRough = clamp(gRough, 0.05, 1.0);
   alb = mix(alb, vec3(0.86, 0.64, 0.26), uGold * max(groove, wear * bevel) * 0.9);   // Session manager: gold trim stays on top
+  alb = mix(alb, uTint, uTintK * (0.55 + 0.45 * max(groove, wear * bevel)));   // action tiles: a steel / white / gray plate
 `;
 
 const SURFACE = /* glsl */`
@@ -251,6 +263,7 @@ const SURFACE = /* glsl */`
   alb *= mix(0.92, 1.0, inner);
 #if WEAR == 0
   alb = mix(alb, vec3(0.86, 0.64, 0.26), uGold * max(groove, wear * bevel) * 0.9);   // Session manager: gold trim
+  alb = mix(alb, uTint, uTintK * (0.55 + 0.45 * max(groove, wear * bevel)));
 #endif
   gRough = mix(0.18, 0.5, smudge) + 0.15 * groove;
   gMetal = 0.93;
@@ -267,6 +280,9 @@ const SURFACE = /* glsl */`
   float field = inner * (0.05 + 0.09 * fbm(p * 4.0 + vec3(0.0, uTime * 0.08, 0.0)));
   vec3 ecol = mix(uEnergy, vec3(dot(uEnergy, vec3(0.3333))), uParked);
   ecol = mix(ecol, vec3(1.0, 0.7, 0.25), uGold);
+  ecol = mix(ecol, uTint, uTintK);
+  ecol = mix(ecol, vec3(0.3, 1.0, 0.45), uDone * 0.6);
+  ecol = mix(ecol, vec3(1.0, 0.5, 0.08), uStuck * (0.65 + 0.35 * sin(uTime * 2.5)));
   gEmit = ecol * energy * (field + groove * 1.0) * mix(1.0, 0.18, uParked);
 #else
 ${WEAR_BODY}
@@ -347,6 +363,18 @@ const WEAR_POST = /* glsl */`
 #endif
 `;
 
+// Beam-in / out: above the line a see-through blue hologram (scan rows, glowing rims), a bright band where it turns solid
+const HOLO_POST = /* glsl */`
+if (uHolo.x >= 0.0) {
+  float hb = (vWy - uHolo.y) / uHolo.z, hk = clamp(hb + 0.5, 0.0, 1.0);
+  if (hk > 0.5 && fract(gl_FragCoord.y * 0.25 + uTime * 1.5) > 0.12 + 0.43 * uHolo.x) discard;
+  vec3 hc = vec3(0.2, 0.52, 1.0) * (0.3 + 1.5 * pow(1.0 - vEdge, 3.0) + 0.7 * vSide) + vec3(0.55, 0.82, 1.0) * gLbl * 0.5;
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, hc * (0.5 + 0.7 * uHolo.x), hk);
+  gl_FragColor.rgb += vec3(0.6, 0.85, 1.0) * exp(-hb * hb * 4.0) * uHolo.w;
+}
+if (uIGlow > 0.0) gl_FragColor.rgb += vec3(0.45, 0.72, 1.0) * uIGlow * (0.35 + 0.8 * (1.0 - vEdge) * (1.0 - vEdge));
+`;
+
 // tile wear style 0-12 (TileStyles_Spec.md; 0 = Today, the look before wear styles). Compiled in as a #define.
 let wearStyle = 0;
 const tiles = new Set();   // WeakRefs to every tile material, so a change reaches them all
@@ -354,17 +382,17 @@ const tiles = new Set();   // WeakRefs to every tile material, so a change reach
 export function makePanelMaterial(seed = Math.random() * 100) {
   const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.92, roughness: 0.35 });
   const u = mat.userData.u = {
-    uLevel: { value: 0 }, uParked: { value: 0 }, uGold: { value: 0 }, uSeed: { value: seed },
+    uLevel: { value: 0 }, uParked: { value: 0 }, uStuck: { value: 0 }, uDone: { value: 0 }, uGold: { value: 0 }, uTint: { value: new THREE.Color(1, 1, 1) }, uTintK: { value: 0 }, uSeed: { value: seed },
     uHasLabel: { value: 0 }, uLabel: { value: null }, uHover: { value: 0 }, uFlare: { value: 0 }, uRipple: { value: -1 }, uRing: { value: -1 }, uHeat: { value: 0 }, uWork: { value: 0 }, uWait: { value: 0 }, uIdle: { value: 0 }, uBump: { value: 1.8 }, uGlow: GLOW, uEnergy: ENERGY, uTime: TIME,
-    uSpread: SPREAD, uNoise: { value: NOISE_TEX }, ...swapUniforms(),
+    uSpread: SPREAD, uNoise: { value: NOISE_TEX }, uHolo: HOLO, uIGlow: IGLOW, ...swapUniforms(),
   };
   mat.onBeforeCompile = sh => {
     Object.assign(sh.uniforms, u);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aEdge, aSide, aWall;\nattribute vec3 aFlatP, aFlatN;\nattribute vec2 aFlatUV;\nuniform float uSpread;\nvarying vec2 vPUv;\nvarying vec3 vObjPos;\nvarying float vEdge, vSide, vWall;')
+      .replace('#include <common>', '#include <common>\nattribute float aEdge, aSide, aWall;\nattribute vec3 aFlatP, aFlatN;\nattribute vec2 aFlatUV;\nuniform float uSpread;\nvarying vec2 vPUv;\nvarying vec3 vObjPos;\nvarying float vEdge, vSide, vWall;\nvarying float vWy;')
       .replace('#include <uv_vertex>', '#include <uv_vertex>\nvPUv = mix(uv, aFlatUV, uSpread);\nvEdge = aEdge; vSide = aSide; vWall = aWall;')
       .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\nobjectNormal = mix(objectNormal, aFlatN, uSpread);')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed = mix(position, aFlatP, uSpread);\nvObjPos = transformed;');
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed = mix(position, aFlatP, uSpread);\nvObjPos = transformed;\nvWy = (modelMatrix * vec4(transformed, 1.0)).y;');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\n' + COMMON)
       .replace('#include <map_fragment>', '#include <map_fragment>\n' + SURFACE)
@@ -372,10 +400,10 @@ export function makePanelMaterial(seed = Math.random() * 100) {
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = gMetal;')
       .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nnormal = perturbN(-vViewPosition, normal, vec2(dFdx(gH), dFdy(gH)) * uBump, faceDirection);')
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += gEmit;')
-      .replace('#include <dithering_fragment>', '#include <dithering_fragment>\n' + WEAR_POST + SWAP_POST);
+      .replace('#include <dithering_fragment>', '#include <dithering_fragment>\n' + WEAR_POST + SWAP_POST + HOLO_POST);
     sh.fragmentShader = '#define WEAR ' + wearStyle + '\n' + sh.fragmentShader;   // only the chosen wear style is compiled
   };
-  mat.customProgramCacheKey = () => 'sphere-tile-hex-v4-w' + wearStyle;
+  mat.customProgramCacheKey = () => 'sphere-tile-hex-v5-w' + wearStyle;
   if (tiles.size > 400) for (const w of tiles) if (!w.deref()) tiles.delete(w);   // rebuilds leave dead refs behind
   tiles.add(new WeakRef(mat));
   return mat;
@@ -383,7 +411,7 @@ export function makePanelMaterial(seed = Math.random() * 100) {
 
 // set the wear style for every tile (existing and new); each material recompiles once, on its next draw
 // changes whenever the tile shaders change (settings-window picture cache key)
-export const SHADER_VER = (COMMON.length + SURFACE.length * 7 + WEAR_BODY.length * 13 + WEAR_POST.length * 17).toString(36);
+export const SHADER_VER = (COMMON.length + SURFACE.length * 7 + WEAR_BODY.length * 13 + WEAR_POST.length * 17 + HOLO_POST.length * 19).toString(36);
 
 export function setPanelWear(n) {
   n = Math.max(0, Math.min(12, Math.round(Number(n)) || 0));
@@ -395,12 +423,13 @@ export function setPanelWear(n) {
 export function setPanelHover(mat, on) { mat.userData.u.uHover.value = on ? 1 : 0; }
 
 // pct 0..1 context use, parked bool, label CanvasTexture or null
-export function setPanelState(mat, { pct = 0, parked = false, label = null, gold = false }) {
+export function setPanelState(mat, { pct = 0, parked = false, label = null, gold = false, stuck = false, done = false, tint = null }) {
   const u = mat.userData.u;
+  if (tint) { u.uTint.value.set(tint); u.uTintK.value = 0.85; } else u.uTintK.value = 0;
   u.uLevel.value = Math.max(0, Math.min(1, pct));
   u.uParked.value = parked ? 1 : 0;
   u.uHeat.value = parked ? 0 : Math.max(0, Math.min(1, (pct - 0.9) / 0.1));   // last 10% before the swap line
-  u.uGold.value = gold ? 1 : 0;
+  u.uGold.value = gold ? 1 : 0; u.uStuck.value = stuck && !parked ? 1 : 0; u.uDone.value = done && !stuck && !parked ? 1 : 0;
   if (u.uLabel.value && u.uLabel.value !== label) u.uLabel.value.dispose();
   u.uLabel.value = label; u.uHasLabel.value = label ? 1 : 0;
 }

@@ -61,6 +61,7 @@ process.stdin.on('data', d => {
     const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
     if (!line) continue;
     let m; try { m = JSON.parse(line); } catch { continue; }
+    if (!m || typeof m !== 'object' || Array.isArray(m)) continue;   // (null or a batch: nothing to answer)
     handle(m);
   }
 });

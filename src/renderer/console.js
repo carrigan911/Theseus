@@ -34,7 +34,7 @@ export function createConsole(host) {
       <div class="nr"><button class="cb cs" data-a="start">Start</button><button class="cb" data-a="cancel" title="Back to the conversation (Esc)">Cancel</button><span class="nmsg"></span></div></div>
     <div class="ca"></div>
     <div class="cf"><div class="cpop" role="listbox" aria-label="Suggestions"></div><textarea rows="1" placeholder="Reply to this session…  (Enter sends, Shift+Enter is a new line; paste or drop files to attach)" spellcheck="false"></textarea><button class="cb cs" data-a="send">Send</button><button class="cb cp" data-a="stop" title="Interrupt the session">Stop</button></div>
-    <div class="cnoapp">Read only. To reply, answer, and start or rename sessions from here, turn on <b>App control</b> in General settings.</div>
+    <div class="cnoapp">Read only. To reply, answer, and start or rename sessions from here, turn on <b>App control</b> in Session Management.</div>
     <div class="cw"></div>`;
   document.body.appendChild(root);
   const q = s => root.querySelector(s), list = q('.cl'), ta = q('.cf textarea'), why = q('.cw'), title = q('.ct'), cq = q('.cq'), nf = q('.nf'), nm = q('.nm'), nt = q('.nt'), nwk = q('.nwk'), nmsg = q('.nmsg'), startB = q('[data-a=start]');
@@ -809,18 +809,22 @@ export function createConsole(host) {
     if ((e.key === 'Tab' && !e.shiftKey) || (e.key === 'Enter' && !e.shiftKey && !e.isComposing)) { popPick(popSel); return true; }
     return false;
   }
-  let sending = false;
+  const sending = new Set();   // sessions with a send in flight (another session can send meanwhile)
   async function send() {
-    const s = cur, t = ta.value.trim(), with_ = atts.slice(); if (!s || (!t && !with_.length) || sending) return;
-    popClose(); sending = true; why.textContent = with_.length ? `Sending with ${with_.length} file${with_.length > 1 ? 's' : ''}…` : 'Sending…';
+    const s = cur, t = ta.value.trim(), with_ = atts.slice(); if (!s || (!t && !with_.length) || sending.has(s.sessionId)) return;
+    popClose(); sending.add(s.sessionId); why.textContent = with_.length ? `Sending with ${with_.length} file${with_.length > 1 ? 's' : ''}…` : 'Sending…';
     const r = await (with_.length
       ? window.sphere.consoleAttach(s.sessionId, with_.filter(a => a.path).map(a => a.path), with_.filter(a => a.png).map(a => a.png), t)
       : window.sphere.consoleSend(s.sessionId, t)).catch(() => null);
-    sending = false;
-    if (cur !== s) return;
+    sending.delete(s.sessionId);
+    if (!cur || cur.sessionId !== s.sessionId) {   // the card closed or moved on while it sent: the draft it saved then held the sent text, which goes now
+      if (r && r.ok) { while (dBusy) await dBusy; dBusy = window.sphere.draftSet(s.sessionId, '', [], []).catch(() => null); await dBusy; dBusy = null; }
+      return;
+    }
     if (r && r.ok) {
       why.textContent = ''; if (ta.value.trim() === t) { ta.value = ''; grow(); }
-      if (with_.length) { atts = atts.filter(a => !with_.includes(a)); with_.forEach(a => a.url && URL.revokeObjectURL(a.url)); drawAtts(); }
+      if (with_.length) { atts = atts.filter(a => !with_.some(w => w === a || (cur !== s && w.name === a.name)));   // (reopened meanwhile: its draft copies by name)
+        with_.forEach(a => a.url && URL.revokeObjectURL(a.url)); drawAtts(); }
       draftNow(s);   // sent: what is left (usually nothing) is the draft
     } else why.textContent = 'Not sent: ' + ((r && r.why) || 'no answer');
   }

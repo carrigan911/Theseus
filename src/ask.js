@@ -59,7 +59,7 @@ function findClaude() {
 // the CLI must not think it runs inside a desktop session (the sphere may have been started from one): a clean environment
 function cleanEnv(token) {
   const env = {};
-  for (const [k, v] of Object.entries(process.env)) if (!/^(CLAUDE|ANTHROPIC|USE_LOCAL_OAUTH|USE_STAGING_OAUTH|ELECTRON)/i.test(k)) env[k] = v;
+  for (const [k, v] of Object.entries(process.env)) if (k === 'CLAUDE_CONFIG_DIR' || !/^(CLAUDE|ANTHROPIC|USE_LOCAL_OAUTH|USE_STAGING_OAUTH|ELECTRON)/i.test(k)) env[k] = v;   // (a custom config dir holds the login)
   if (token) env.CLAUDE_CODE_OAUTH_TOKEN = token;
   return env;
 }
@@ -120,7 +120,7 @@ async function ask(q, o = {}) {
   const snap = { now: new Date().toString(), ...trim(o.snapshot || {}), ops: o.opsFile ? opsData(o.opsFile) : null };
   const hist = (o.history || []).slice(-2).map(h => `Earlier question: ${h.q}\nYour answer: ${h.a}`).join('\n');
   const prompt = `SNAPSHOT (JSON):\n${JSON.stringify(snap)}\n\n${hist ? hist + '\n\n' : ''}Question: ${q}`;
-  const cwd = path.join(os.tmpdir(), 'SessionSphere', 'ask'); try { fs.mkdirSync(cwd, { recursive: true }); } catch {}
+  const cwd = path.join(os.tmpdir(), 'Theseus', 'ask'); try { fs.mkdirSync(cwd, { recursive: true }); } catch {}
   const opt = { web: !!o.web, token: o.token, cwd, tools: o.tools || null }, acts = !!o.tools, extra = acts ? 12000 : 0;   // tool calls take turns
   const tail = o.web ? WEB_ON : WEB_OFF, t0 = Date.now();
   const slow = setTimeout(() => { if (o.onSlow) o.onSlow(); }, 4000);

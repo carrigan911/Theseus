@@ -1,6 +1,8 @@
 # Theseus
 
-A desktop companion app for Claude Code, for Windows. Full voice control, automatic session swaps, custom modes.
+A desktop overview of your Claude Code sessions, for Windows. You can talk to it.
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/fullcircle_0)
 
 https://github.com/user-attachments/assets/b885b0bf-1b92-47bb-a9fd-bbf04420a701
 
@@ -37,7 +39,7 @@ type into sessions and to start or archive them. Without App control it only war
   commit. You get 30 s to say "cancel". By default the session then **clears itself** and Theseus re-prompts it from the
   checkpoint. The session keeps its title, group, model and Remote Control, and only one typed message is needed. The
   other **Swap method** is "New session": a fresh session continues from the checkpoint, and the old one is archived.
-  Theseus falls back to it when a clear fails twice, and you can pick it for one swap with Queue → Swap to a new
+  Theseus falls back to it when a clear fails twice, and you can pick it for one swap with Queue â†’ Swap to a new
   session.
 - **Modes on a schedule:** Night (11 PM to 6:30 AM) and Weekend (Friday evening to Monday morning) start and end on their
   own. Each mode can send a message to your active sessions, such as "finish the current step, commit and stop".
@@ -55,13 +57,13 @@ type into sessions and to start or archive them. Without App control it only war
 - The assistant's name is its wake word. The default name is Theseus, and you can change it in Setup.
 - Speak with push-to-talk (hold Right Ctrl), with the wake word, or always on.
 - **Voice chat:** after the wake word, carry on talking. Once Theseus has replied it keeps listening for a few seconds
-  (Chat wait, 3–30 s), no wake word needed. "That's all" or silence ends the chat.
+  (Chat wait, 3â€“30 s), no wake word needed. "That's all" or silence ends the chat.
 - **Commands:**
   - Open a session ("open hand solver"), tile view, change modes.
-  - "Tell <session> …" sends a message. It is read back first and sent after 3 s unless you say "cancel".
+  - "Tell <session> â€¦" sends a message. It is read back first and sent after 3 s unless you say "cancel".
   - "What did <session> say", and "stop <session>".
   - Card control: "next tile", "scroll down", "close the card".
-  - Dictation into the open card: "type …", "send it", "clear it".
+  - Dictation into the open card: "type â€¦", "send it", "clear it".
   - "Change voice", "speak faster", "turn alerts off". "Undo that" reverses the last change.
 - **Quick answers** come from your session list, without a Claude call: "what is <session> doing", "who needs me",
   "how full is <session>".
@@ -70,6 +72,12 @@ type into sessions and to start or archive them. Without App control it only war
   - Anything that sends, starts, answers or stops is read back first.
 - **Spoken alerts** when a session finishes, needs you or asks permission. "Stop talking" cuts the voice off.
 - Uses a built-in Windows voice. A Kokoro voice folder and Whisper (for better recognition) are optional.
+
+### Echo (off by default)
+Your Amazon Echo can speak Theseus's alerts ("Renderer has a question") in Theseus's voice. You can also ask it:
+"Alexa, ask Theseus who needs me" or "â€¦ what Renderer is doing". This needs Voice Monkey, Tailscale Funnel and an Alexa
+skill you create; [docs/Echo/Setup.md](docs/Echo/Setup.md) walks through it. Theseus checks every skill request's Alexa
+signature and skill id, and only the `/alexa` paths are reachable from outside.
 
 ### Tools for your sessions (MCP)
 Theseus can add an MCP server named `theseus` to Claude Code (**Add** under Theseus settings). With it, your sessions can:
@@ -89,12 +97,18 @@ You choose what they may do, and you can turn the tools off.
 
 ## Privacy
 Theseus reads Claude Code's session files on your PC (`~/.claude/projects`) and keeps its settings in `%APPDATA%`. It has
-no account, no telemetry and no server: nothing is uploaded by Theseus itself. Questions you send to Ask go to Claude
+no account and no telemetry, and nothing is uploaded by Theseus itself (Echo, when you turn it on, is the one exception below). Questions you send to Ask go to Claude
 through your own Claude Code. Speech recognition (Windows or Whisper) runs on your PC. Opening a session in the Claude app
 uses the app's own `claude://` link.
+With Echo on, alert lines go to Voice Monkey, and the skill's answers go to Alexa.
 
 ## Requirements
-- Windows 10 or 11.
+- Windows 10 or 11, 64-bit.
+- **Graphics:** a DirectX 11 graphics card or integrated graphics (Intel, AMD or NVIDIA) with up-to-date drivers. Without
+  one, Theseus falls back to software drawing at a lower resolution: it still runs, but it uses a lot of CPU.
+- **Memory:** 4 GB RAM minimum, 8 GB recommended. Theseus itself uses about 0.7 to 1 GB (more with a background on).
+- **Processor:** any 2-core 64-bit CPU. The sphere idles at under half of one core and is capped at 30 frames a second.
+- **Disk:** about 350 MB for the app, plus your recordings.
 - Claude Code sessions on this PC: the Claude desktop app, or the `claude` CLI.
 - Optional:
   - git and the GitHub CLI (`gh`), for the repository tools.
@@ -104,7 +118,7 @@ uses the app's own `claude://` link.
 
 ## Install
 1. Run `Theseus-Setup-x.y.z.exe`. The installer is unsigned, so Windows SmartScreen warns the first time. Choose
-   **More info → Run anyway**.
+   **More info â†’ Run anyway**.
 2. The Setup card opens on first start. There you set:
    - the assistant name;
    - the recordings folder;
@@ -117,7 +131,7 @@ uses the app's own `claude://` link.
 background, then shows an **Update to x.y.z** button on top of the sphere, in the tray menu and in Settings. Clicking it
 installs the update and restarts Theseus. You can check by hand with **Check now** in Settings.
 
-To uninstall, use Windows Settings → Apps → Theseus.
+To uninstall, use Windows Settings â†’ Apps â†’ Theseus.
 
 ## App control (off by default)
 When App control is on, you can do these things from the sphere or by voice: reply to a session, answer its questions,
@@ -128,9 +142,7 @@ Anthropic's terms restrict automated access to its services, so use App control 
 working when the Claude app updates. While it is off, the console is read-only.
 
 ## Support
-Theseus is free. If it saves you time or you enjoy this project, you can buy me a coffee: 
-
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/fullcircle_0)
+Theseus is free. If it saves you time or you enjoy this project, you can buy me a coffee: [buymeacoffee.com/fullcircle_0](https://buymeacoffee.com/fullcircle_0)
 
 ## License
 MIT, see [LICENSE](LICENSE).

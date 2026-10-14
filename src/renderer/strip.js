@@ -22,6 +22,10 @@ function render() {
   $('modeName').innerHTML = '';
   $('modeName').append(NAMES[m] || m);
   if (pend) { const p = document.createElement('span'); p.className = 'pend'; p.textContent = ` → ${NAMES[pend] || pend}`; $('modeName').append(p); }
+  const f = T.focus || {}, fb = $('focusBtn');
+  fb.classList.toggle('on', !!f.on);
+  $('focusName').textContent = !f.on ? 'Focus' : f.until ? 'Focus till ' + new Date(f.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'Focus';
+  fb.title = f.on ? `Focus on (${f.level || 'custom'}${f.setBy ? ', set by ' + f.setBy : ''}): sessions send only clear-swaps and blockers. Click: extend / turn off` : 'Focus off. Click: turn on';
   const a = T.audio;
   $('out').classList.toggle('unavail', !T.avail.audio); $('mic').classList.toggle('unavail', !T.avail.audio);
   $('outName').textContent = a && a.out ? a.out.name : T.avail.audio ? '...' : 'no audio';
@@ -115,6 +119,7 @@ else {
     const b = e.target.closest('[data-act]'); if (!b) return;
     const a = b.dataset.act;
     if (a === 'mode') window.sphere.act('menu-mode', rect('modeBtn'));
+    else if (a === 'focus') window.sphere.act('menu-focus', rect('focusBtn'));
     else if (a === 'out') window.sphere.act('nextOut');
     else if (a === 'mic') window.sphere.act('muteMic');
     else if (a === 'rec') window.sphere.act('recToggle');

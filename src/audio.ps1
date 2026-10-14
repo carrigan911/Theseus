@@ -488,12 +488,12 @@ namespace SsAudio
             }
         }
 
-        // a question: long enough and heard well enough -> its audio in %TEMP%\SessionSphere\q_<ticks>.wav
+        // a question: long enough and heard well enough -> its audio in %TEMP%\Theseus\q_<ticks>.wav
         static string Question(RecognitionResult r, string m, out double sec)
         {
             var a = r.Audio; sec = a == null ? 0 : a.Duration.TotalSeconds;
             if (a == null || sec < MinQuestionS || r.Confidence < MinFor(m) * 0.75) return null;
-            string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SessionSphere");
+            string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Theseus");
             System.IO.Directory.CreateDirectory(dir);
             string p = System.IO.Path.Combine(dir, "q_" + DateTime.UtcNow.Ticks + ".wav");
             using (var fs = System.IO.File.Create(p)) a.WriteToWaveStream(fs);
@@ -648,7 +648,7 @@ namespace SsAudio
             // Ask on, Whisper hears it first and main runs the guess only if Whisper agrees (or cannot answer)
             if (AskOn && conf < SureCmd && cmd != "hush" && e.Result.Audio != null)   // a wrong hush only ends speech: no check, no delay
             {
-                string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SessionSphere"); System.IO.Directory.CreateDirectory(dir);
+                string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Theseus"); System.IO.Directory.CreateDirectory(dir);
                 string p = System.IO.Path.Combine(dir, "q_" + DateTime.UtcNow.Ticks + ".wav");
                 using (var fs = System.IO.File.Create(p)) e.Result.Audio.WriteToWaveStream(fs);
                 J.Line("{\"event\":\"question\",\"wav\":" + J.S(p) + ",\"sec\":" + J.N(e.Result.Audio.Duration.TotalSeconds) + ",\"confidence\":" + J.N(conf) + ",\"follow\":false,\"guess\":{\"cmd\":" + J.S(cmd) + ",\"arg\":" + J.S(arg) + ",\"text\":" + J.S(txt) + ",\"confidence\":" + J.N(conf) + ",\"wake\":" + J.B(wk) + "}}");
@@ -792,12 +792,12 @@ namespace SsAudio
     }
 }
 '@
-# compiled once into %TEMP%\SessionSphere (keyed by the source); a unique temp name per process + a move keeps two helpers
+# compiled once into %TEMP%\Theseus (keyed by the source); a unique temp name per process + a move keeps two helpers
 # starting together from clobbering each other
 $loaded = $false
 try {
   $key = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($src))).Replace('-', '').Substring(0, 12)
-  $dir = Join-Path $env:TEMP 'SessionSphere'; $dll = Join-Path $dir "audio_$key.dll"
+  $dir = Join-Path $env:TEMP 'Theseus'; $dll = Join-Path $dir "audio_$key.dll"
   if (-not (Test-Path $dll)) {
     New-Item -ItemType Directory -Force $dir | Out-Null
     $tmp = Join-Path $dir "audio_$key.$PID.tmp"

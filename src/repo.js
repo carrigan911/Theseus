@@ -21,7 +21,7 @@ function exe(name) {
 const run = (name, args, cwd, ms = 15000, env = null) => new Promise(res => {
   const f = exe(name); if (!f) return res({ ok: false, out: '', err: `spawn ${name} ENOENT` });
   if (name === 'git') args = ['-c', 'core.fsmonitor=false', ...args];
-  execFile(f, args, { cwd, timeout: ms, maxBuffer: 16 << 20, windowsHide: true, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...env } }, (err, out, errOut) =>
+  execFile(f, args, { cwd, timeout: ms, maxBuffer: 16 << 20, windowsHide: true, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1', ...env } }, (err, out, errOut) =>
     res({ ok: !err, out: String(out || ''), err: String(errOut || (err && err.message) || '') }));
 });
 const MAX_FILES = 400, MAX_DIFF = 3000;
@@ -74,11 +74,15 @@ async function fileDiff(dir, file) {
     const L = t.toString('utf8').replace(/\r\n?/g, '\n').split('\n'); if (L.length > 1 && L[L.length - 1] === '') L.pop();   // the last newline ends a line, it is not one
     return { ok: true, lines: L.slice(0, MAX_DIFF).map(x => ['+', x.slice(0, 400)]), cut: L.length > MAX_DIFF };
   }
-  const r = await run('git', ['diff', '--no-color', '--no-ext-diff', 'HEAD', '--', file], c.root);
+  // a repo with no commit yet has no HEAD: its changes are the staged ones
+  let r = await run('git', ['diff', '--no-color', '--no-ext-diff', 'HEAD', '--', file], c.root);
+  if (!r.ok && /HEAD/.test(r.err)) r = await run('git', ['diff', '--no-color', '--no-ext-diff', '--cached', '--', file], c.root);
   if (!r.ok) return { ok: false, why: r.err.trim().split('\n')[0] || 'git diff failed' };
-  const out = [];
+  const out = []; let hunk = false;   // header lines only before the first @@ (a removed "-- x" line shows as "--- x")
   for (const l of r.out.replace(/\r\n?/g, '\n').split('\n')) {
-    if (/^(diff --git|index |--- |\+\+\+ |new file mode|deleted file mode|similarity|rename )/.test(l)) continue;
+    if (l.startsWith('diff --git')) { hunk = false; continue; }
+    if (l.startsWith('@@')) hunk = true;
+    if (!hunk && /^(index |--- |\+\+\+ |new file mode|deleted file mode|similarity|rename |old mode|new mode)/.test(l)) continue;
     if (l.startsWith('@@')) out.push(['@', l]); else if (l.startsWith('Binary files')) out.push(['@', 'Binary file changed']);
     else if (l[0] === '+' || l[0] === '-' || l[0] === ' ') out.push([l[0], l.slice(1, 401)]);
     if (out.length >= MAX_DIFF) break;
@@ -308,4 +312,15 @@ async function worktreeRemove(dir, wt) {
   const r = it.prunable ? await run('git', ['worktree', 'prune'], w.list[0].path) : await run('git', ['worktree', 'remove', it.path], w.list[0].path, 60000);
   return r.ok ? { ok: true, out: 'Worktree removed' } : { ok: false, why: why(r) };
 }
-module.exports = { changes, fileDiff, pr, tasks, tasksRead, artifacts, commit, pushInfo, push, prDraft, prCreate, worktrees, worktreeRemove, defaultBranch, isWorktree, exe };
+// the newest commit's time (ms), or 0 (no git, no commits)
+async function lastCommit(dir) { if (gone(dir)) return 0; const r = await run('git', ['log', '-1', '--format=%ct'], dir); return r.ok ? Number(r.out.trim()) * 1000 || 0 : 0; }
+// the digest (Autonomy part 4b): commit subjects since a time on all branches, and which repository this is (worktrees share one)
+async function logSince(dir, since) {
+  if (gone(dir)) return { ok: false };
+  const c = await run('git', ['rev-parse', '--show-toplevel', '--git-common-dir'], dir); if (!c.ok) return { ok: false };
+  const [top, common] = c.out.trim().split(/\r?\n/), repo = path.resolve(dir, common || '.git');   // (relative to the folder it ran in)
+  const name = path.basename(/\.git$/i.test(repo) ? path.dirname(repo) : top);
+  const r = await run('git', ['log', '--all', '--no-merges', `--since=@${Math.floor(since / 1000)}`, '--format=%s', '-n', '200'], dir);
+  return r.ok ? { ok: true, repo: repo.toLowerCase(), name, subjects: r.out.split(/\r?\n/).map(x => x.trim()).filter(Boolean) } : { ok: false };
+}
+module.exports = { logSince, lastCommit, changes, fileDiff, pr, tasks, tasksRead, artifacts, commit, pushInfo, push, prDraft, prCreate, worktrees, worktreeRemove, defaultBranch, isWorktree, exe };

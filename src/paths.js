@@ -12,7 +12,8 @@ function onPath(name) {
   const c = found.get(name);
   if (c && (c.hit || Date.now() - c.at < 60000)) return c.hit;
   let hit = '';
-  for (const d of String(process.env.PATH || '').split(path.delimiter)) {
+  for (let d of String(process.env.PATH || '').split(path.delimiter)) {
+    d = d.trim().replace(/^"(.*)"$/, '$1');   // a quoted entry is a folder too
     if (!d || !path.isAbsolute(d)) continue;
     const f = path.join(d, name);
     try { if (fs.statSync(f).isFile()) { hit = f; break; } } catch { try { if (fs.lstatSync(f).isSymbolicLink()) { hit = f; break; } } catch {} }   // an app alias (wt.exe in WindowsApps) only lstats
@@ -30,7 +31,7 @@ const P = {
   // the External voice's talking state, else the built-in voice's own folder
   voiceState: () => process.env.SPHERE_VOICE_DIR || (P.voiceExt() ? path.join(get().echoDir, 'state') : P.builtinVoice()),
   voiceExt: () => { const e = P.echo(); try { return !!e && fs.statSync(path.join(e, 'speak.ps1')).isFile(); } catch { return false; } },
-  builtinVoice: () => path.join(os.tmpdir(), 'SessionSphere', 'voice'),
+  builtinVoice: () => path.join(os.tmpdir(), 'Theseus', 'voice'),
   whisperPy: () => process.env.SPHERE_WHISPER_PY || (on('whisper') && get().whisperPy) || '',
   // add-ons: each is on when not switched off and its file is there -> { k: { on, found } }
   addons() {

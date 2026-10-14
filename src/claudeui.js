@@ -59,8 +59,17 @@ function pump() {
   waiting.set(id, { res, timer });
   try { p.stdin.write(JSON.stringify({ id, ...w.cmd }) + '\n'); } catch { done(id, { ok: false, why: 'write failed' }); }
 }
+// the Claude window's own rect from the first place of a card, kept here too: a helper killed while the card is open
+// (a hung call) does not take it along, so the fresh one still puts the window back where it was
+let savedRect = null, restores = 0;   // restores: a place that finishes after a later restore does not bring an old rect back
 function send(cmd, ms = 20000) {
-  if (stopped) return Promise.resolve({ ok: false, why: 'stopped' });   // after quit's stop(): a late poll never spawns a new helper
+  if (stopped || process.env.SPHERE_DEMO) return Promise.resolve({ ok: false, why: 'stopped' });   // (a demo recording never touches the real Claude window)   // after quit's stop(): a late poll never spawns a new helper
+  if (cmd.cmd === 'place' || cmd.cmd === 'restore') {
+    const c = savedRect && !cmd.saved ? { ...cmd, saved: savedRect } : cmd, n = cmd.cmd === 'restore' ? ++restores : restores;
+    const w = { cmd: c, ms, key: null }; w.p = new Promise(r => { w.res = r; }); queue.push(w); pump();
+    if (cmd.cmd === 'restore') return w.p.then(r => { if (r && r.ok && n === restores) savedRect = null; return r; });   // (a failed restore keeps it for the retry)
+    return w.p.then(r => { if (r && r.ok && r.saved && !savedRect && n === restores) savedRect = r.saved; return r; });
+  }
   const key = Object.keys(cmd).length === 1 ? cmd.cmd : null, same = key && queue.find(w => w.key === key);   // only bare polls are shared
   if (same) return same.p;
   const w = { cmd, ms, key }; w.p = new Promise(r => { w.res = r; }); queue.push(w); pump();

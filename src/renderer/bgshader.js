@@ -1,12 +1,13 @@
 // The background shader (Backgrounds_Spec), shared by the background window (bg.js) and the style pictures in Settings.
-// makeBgShader(canvas) -> { gl, draw(style, time, tint, speed, alpha) } on that canvas's own WebGL context.
+// makeBgShader(canvas) -> { gl, draw(style, time, tint, speed, alpha, fx) } on that canvas's own WebGL context.
+// fx (Lightfall, Lightfall_Spec): { warp, beam (canvas px x of the beam), sx, sy (the shake, canvas px) } or none.
 'use strict';
 const BG_STYLE = { black: 0, space: 1, moving: 2, gradient: 3, travel: 4 }, BG_MOVING = new Set(['moving', 'gradient', 'travel']);
 function makeBgShader(cv) {
 const gl = cv.getContext('webgl', { alpha: true, premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: true });
 const VS = 'attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }';
 const FS = `precision highp float;
-uniform vec2 uRes; uniform float uTime, uStyle, uAlpha, uTravel; uniform vec3 uTint;
+uniform vec2 uRes, uShake; uniform float uTime, uStyle, uAlpha, uTravel, uWarp, uBeam; uniform vec3 uTint;
 float h21(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
 float noise(vec2 p) { vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
   return mix(mix(h21(i), h21(i + vec2(1, 0)), u.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), u.x), u.y); }
@@ -74,26 +75,31 @@ vec3 travel(vec2 p, float t) {
   return c;
 }
 void main() {
-  vec2 p = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+  vec2 p = (gl_FragCoord.xy + uShake - 0.5 * uRes) / uRes.y;
+  float u = p.x - (uBeam - 0.5 * uRes.x) / uRes.y, au = abs(u);
+  // Lightfall: space pinched sideways into the beam (squeezed next to it, stretched into streaks further out; stays one-to-one)
+  if (uWarp != 0.0) p.x += u * 7.0 * uWarp * exp(-au / 0.4);
   vec3 c = vec3(0.0);
   if (uStyle < 0.5) c = vec3(0.0);
   else if (uStyle < 1.5) c = space(p, 0.0, 0.0);
   else if (uStyle < 2.5) c = space(p, uTime, 1.0);
   else if (uStyle < 3.5) c = gradient(p, uTime);
   else c = travel(p, uTime);
+  if (uWarp > 0.0) { float w = min(uWarp, 1.0); c = c * mix(1.0, 0.3 + 1.5 * exp(-au / 0.06), w) + vec3(0.3, 0.6, 1.0) * w * exp(-au / 0.025) * 0.4; }
   gl_FragColor = vec4(c, uAlpha);
 }`;
 function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s)); return s; }
 const prog = gl.createProgram(); gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(prog); gl.useProgram(prog);
 const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
 const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-const U = n => gl.getUniformLocation(prog, n), uRes = U('uRes'), uTime = U('uTime'), uStyle = U('uStyle'), uAlpha = U('uAlpha'), uTint = U('uTint'), uTravel = U('uTravel');
+const U = n => gl.getUniformLocation(prog, n), uShake = U('uShake'), uWarp = U('uWarp'), uBeam = U('uBeam'), uRes = U('uRes'), uTime = U('uTime'), uStyle = U('uStyle'), uAlpha = U('uAlpha'), uTint = U('uTint'), uTravel = U('uTravel');
 
 const rgb = h => { const m = /^#?([0-9a-f]{6})$/i.exec(h || ''); const n = m ? parseInt(m[1], 16) : 0x3da5ff; return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; };
-return { gl, draw(style, time, tint, speed, alpha) {
+return { gl, draw(style, time, tint, speed, alpha, fx) {
   gl.viewport(0, 0, cv.width, cv.height);
   gl.uniform2f(uRes, cv.width, cv.height); gl.uniform1f(uTime, time); gl.uniform1f(uStyle, BG_STYLE[style] ?? 0);
   gl.uniform1f(uAlpha, alpha); gl.uniform3fv(uTint, rgb(tint)); gl.uniform1f(uTravel, speed);
+  gl.uniform1f(uWarp, fx ? fx.warp : 0); gl.uniform1f(uBeam, fx ? fx.beam : 0); gl.uniform2f(uShake, fx ? fx.sx : 0, fx ? fx.sy : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 } };
 }

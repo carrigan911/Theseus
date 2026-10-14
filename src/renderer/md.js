@@ -34,11 +34,11 @@ export function md(text, depth = 0) {   // depth: quotes and lists nested in eac
     let m;
     if ((m = /^\s*(`{3,}|~{3,})\s*([\w+-]*)\s*$/.exec(l))) {             // fenced code block (unclosed: to the end)
       flush(); const fence = m[1][0], code = []; i++;
-      while (i < L.length && !new RegExp('^\\s*\\' + fence + '{3,}\\s*$').test(L[i])) code.push(L[i++]);
+      while (i < L.length && !new RegExp('^\\s*\\' + fence + '{' + m[1].length + ',}\\s*$').test(L[i])) code.push(L[i++]);
       i++; out.push(`<pre class="mdc"${m[2] ? ` data-lang="${esc(m[2])}"` : ''}><code>${esc(code.join('\n'))}</code></pre>`); continue;
     }
     if (!l.trim()) { flush(); i++; continue; }
-    if ((m = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(l))) { flush(); const n = Math.min(6, m[1].length + 2); out.push(`<h${n} class="mdh">${inline(m[2])}</h${n}>`); i++; continue; }
+    if ((m = /^(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/.exec(l))) { flush(); const n = Math.min(6, m[1].length + 2); out.push(`<h${n} class="mdh">${inline(m[2])}</h${n}>`); i++; continue; }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(l)) { flush(); out.push('<hr>'); i++; continue; }
     if (l.includes('|') && i + 1 < L.length && isSep(L[i + 1])) {         // table: header, separator, rows
       flush(); const head = cells(l), al = cells(L[i + 1]).map(c => /^:-+:$/.test(c) ? 'center' : /-:$/.test(c) ? 'right' : '');

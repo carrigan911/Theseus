@@ -64,7 +64,7 @@ const outputIdx = d => Math.max(0, allDisplays().findIndex(x => x.id === d.id));
 // silence fills the gap so audio stays in step with the video. Data that runs far ahead of the clock is dropped.
 let pipeSeq = 0;
 function makeFeeder(kind) {
-  const name = `sessionsphere_rec_${kind}_${process.pid}_${++pipeSeq}`;
+  const name = `theseus_rec_${kind}_${process.pid}_${++pipeSeq}`;
   const f = { kind, path: `\\\\.\\pipe\\${name}`, sock: null, closed: false, written: 0, t0: process.hrtime.bigint(), timer: null, dropped: 0, connectMs: 0 };
   const server = net.createServer();
   f.connected = new Promise(resolve => {
@@ -132,7 +132,7 @@ function create(opts = {}) {
     return (encP = (async () => { for (const e of order) if (await tryEnc(e)) return e; return 'libx264'; })());
   }
   const tagFor = codec => codec === 'hevc' ? ['-tag:v', 'hvc1'] : codec === 'h264' ? ['-tag:v', 'avc1'] : [];   // mp4 tags by codec
-  const tmpDir = opts.tmpDir || path.join(os.tmpdir(), 'SessionSphere', 'rec');
+  const tmpDir = opts.tmpDir || path.join(os.tmpdir(), 'Theseus', 'rec');
   const inst = ++instances;
   const ch = n => `rec${inst}:${n}`;
   const ee = new EventEmitter();
@@ -147,9 +147,9 @@ function create(opts = {}) {
   const emitErr = (where, e) => { try { ee.emit('error', { where, message: String(e && e.message || e) }); } catch { } };
   // an 'error' event with no listener would throw; keep a no-op listener so C can opt in
   ee.on('error', () => { });
-  // ffmpeg left over from an app that died hard (its pipes are named sessionsphere_rec_*; the parent is gone): it would grab the screen forever
+  // ffmpeg left over from an app that died hard (its pipes are named theseus_rec_*; the parent is gone): it would grab the screen forever
   if (!opts.keepOrphans) execFile('powershell.exe', ['-NoProfile', '-Command',
-    "Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe'\" | ? { $_.CommandLine -match 'sessionsphere_rec_' -and -not (Get-Process -Id $_.ParentProcessId -EA SilentlyContinue) } | % { Stop-Process -Id $_.ProcessId -Force }"],
+    "Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe'\" | ? { $_.CommandLine -match 'theseus_rec_' -and -not (Get-Process -Id $_.ParentProcessId -EA SilentlyContinue) } | % { Stop-Process -Id $_.ProcessId -Force }"],
     { windowsHide: true, timeout: 20000 }, () => { });
   const state = () => ({ recording: !!recJob, since: recJob ? recJob.started : null, file: recJob ? recJob.output : null, replay: !!replayJob, replaySec });
   const emitState = () => { if (!disposed) try { ee.emit('state', state()); } catch { } };
@@ -244,6 +244,7 @@ function create(opts = {}) {
   ipcMain.on(ch('caperr'), onCapErr);
 
   async function capCall(kind, on) {
+    if (disposed) return;   // (a stop queued by dispose: no new capture page while quitting)
     try {
       await ensureCapWin();
       if (!capWin) return;
@@ -251,14 +252,18 @@ function create(opts = {}) {
       active[kind] = on;
     } catch (e) { emitErr('capture-' + kind, e); }
   }
+  // one start / stop at a time per kind, each deciding when it runs (not when queued): a job that attaches while the last
+  // one's stop is still on its way keeps its sound, and two starts never open two streams
+  const capQ = { sys: Promise.resolve(), mic: Promise.resolve() };
+  const capSync = kind => (capQ[kind] = capQ[kind].then(() => { if (disposed) return; const want = subs[kind].size > 0; if (want !== active[kind]) return capCall(kind, want); }));
   async function attach(kind, feeder) {
     clearTimeout(capCloseTimer);
     subs[kind].add(feeder);
-    if (!active[kind] && subs[kind].size === 1) await capCall(kind, true);
+    await capSync(kind);
   }
   function detach(kind, feeder) {
     subs[kind].delete(feeder);
-    if (!subs[kind].size && active[kind]) capCall(kind, false);
+    if (!subs[kind].size) capSync(kind);
     if (!subs.sys.size && !subs.mic.size) {                // nothing left: free the page after a short grace
       clearTimeout(capCloseTimer);
       capCloseTimer = setTimeout(() => { if (!subs.sys.size && !subs.mic.size && capWin && !capWin.isDestroyed()) capWin.close(); }, 3000);
@@ -320,7 +325,7 @@ function create(opts = {}) {
 
   // Starts an ffmpeg job (recording or replay ring) and resolves when it is up (inputs open, still alive 0.5 s later).
   async function startJob(kind, o, outputArgs, output, useGdi = false) {
-    if (!ffmpegOf()) throw new Error('ffmpeg was not found: install it, or set its path under General settings > Paths');
+    if (!ffmpegOf()) throw new Error('ffmpeg was not found: install it, or set its path under General Settings > Paths');
     const s = resolveSource(o), enc = await encoder();
     let title = '';
     if (useGdi) { const w = (await listWindows()).find(x => x.hwnd === s.hwnd); if (!w) throw new Error('window not found'); title = w.title; }
@@ -423,13 +428,17 @@ function create(opts = {}) {
     fs.mkdirSync(outDir, { recursive: true });
     const file = uniquePath(outDir, pre() + '_' + stamp(), '.mkv');
     recJob = { starting: true, started: Date.now(), output: file, feeders: [] };   // placeholder so a second start is refused
-    busyOut.add(file);
+    busyOut.add(file); emitState();   // (shown as recording while it starts: a Stop then reaches stop())
     checkDisk(outDir, 'recording', true);
     let job;
     try { job = await startJob('rec', o, [file], file); }
     catch (e) { recJob = null; busyOut.delete(file); emitState(); throw e; }
+    // quit, or Stop pressed, while it was starting: it ends now (a stop during the start is not dropped)
+    const stopAsked = recJob && recJob.stopAsked;
+    if (disposed) { recJob = null; await endJob(job); busyOut.delete(file); throw new Error('disposed'); }
     job.started = Date.now();
     recJob = job;
+    if (stopAsked) { emitState(); const r = await stop(); return { file: r.file || file, stopped: true }; }
     startLevels(); startDiskWatch(outDir);
     job.proc.exited.then(async () => {                   // ffmpeg ended by itself (not through stop())
       if (recJob !== job) return;
@@ -443,7 +452,8 @@ function create(opts = {}) {
   async function stop() {
     if (stopping) return stopping;
     const job = recJob;
-    if (!job || job.starting) return { file: null, error: 'not recording' };
+    if (job && job.starting) { job.stopAsked = true; return { file: null, error: 'still starting: it stops once started' }; }
+    if (!job) return { file: null, error: 'not recording' };
     recJob = null; stopDiskWatch(); emitState();
     stopping = (async () => {
       try { await endJob(job); return await remux(job.output); }
@@ -480,6 +490,7 @@ function create(opts = {}) {
     const sec0 = replaySec;
     const job = await startJob('replay', replayOpts,
       ['-f', 'segment', '-segment_time', '2', '-segment_format', 'mpegts', '-segment_wrap', String(ringCount(sec0)), '-reset_timestamps', '0', path.join(replayDir(), 'seg%03d.ts')], null);
+    if (disposed) { await endJob(job); throw new Error('disposed'); }   // quit while it started: its ffmpeg is not left running
     job.sec = sec0;
     replayJob = job; startLevels();
     job.proc.exited.then(() => {
@@ -518,7 +529,7 @@ function create(opts = {}) {
     const code = await Promise.race([p.exited, sleep(120000).then(() => 'timeout')]);
     if (code === 'timeout') { try { p.kill(); } catch { } await Promise.race([p.exited, sleep(5000)]); }
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { }
-    if (code !== 0 || !fs.existsSync(out)) { throw new Error('replay save failed: ' + tail(logPath('replaysave'), 300)); }
+    if (code !== 0 || !fs.existsSync(out)) { if (code !== 0) try { fs.unlinkSync(out); } catch { } throw new Error('replay save failed: ' + tail(logPath('replaysave'), 300)); }
     return { file: out, sec };
   }
 

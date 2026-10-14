@@ -6,6 +6,9 @@ import { createSphere, tileGroup } from './sphere.js';
 import { TIME, setPanelHover, setPanelWear } from './panel.js';
 import { createConsole } from './console.js';
 import { createChips } from './chips.js';
+import { createBacklog } from './blog.js';
+import { createDigest } from './digest.js';
+import { introPose, createBackdrop, KINDS, INTRO_LEN, OUTRO_LEN } from './introfx.js';
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
@@ -33,6 +36,49 @@ function makeRenderer(aa) {
 scene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 0.6));
 const sun = new THREE.DirectionalLight(0xffffff, 2); sun.position.set(2, 3, 4); scene.add(sun);
 const sphere = createSphere(scene);
+// start / close animations (StartupFx_Spec): main sends { dir, kind, side } when the window shows and before it hides or
+// quits. The sphere stays hidden until main's first word (or 4 s), and after a close until the next start.
+const backdrop = createBackdrop(-2.5); scene.add(backdrop.mesh);
+let intro = null, introWait = true, gone = false;
+setTimeout(() => { if (introWait) { introWait = false; wake(); } }, 6000);
+window.sphere.onIntro?.(onIntro);
+window.sphere.introFirst?.().then(m => { if (introWait) onIntro(m || { dir: 'in', kind: 'off' }); }, () => { if (introWait) onIntro(null); });
+function onIntro(m) {
+  introWait = false;
+  if (m && m.dir === 'in') gone = false;
+  if (intro) endIntro();
+  if (!m || !KINDS.includes(m.kind)) { if (m && m.dir === 'out') window.sphere.introDone?.('out'); wake(); return; }
+  intro = { k: m.kind, dir: m.dir, len: m.dir === 'out' ? OUTRO_LEN : INTRO_LEN, t0: performance.now(), sg: m.side === 'right' ? 1 : -1, streak: !!m.streak };
+  wake();
+}
+function endIntro() {
+  const d = intro && intro.dir; intro = null; backdrop.hide(); sphere.setIntro(null, 1);
+  sphere.root.position.set(0, 0, 0); sphere.root.rotation.set(0, 0, 0); camera.position.x = camera.position.y = 0;   // (Lightfall's shake)
+  if (d) window.sphere.introDone?.(d);
+  return d;
+}
+// after the root's size is set each frame: the pose on top of it, the tiles' reveal and the backdrop
+function introFrame(t) {
+  const root = sphere.root;
+  if (introWait || gone) { root.visible = false; return; }
+  if (!intro) { root.visible = true; return; }
+  const I = intro, p = Math.min(1, (t - I.t0) / 1000 / I.len), ctx = { sg: I.sg, halfW: worldHalfH * camera.aspect / scale, streak: I.streak };
+  const P = introPose(I.k, I.dir, p, ctx);
+  root.visible = P.s > 0.002;
+  root.position.set(P.x * scale, P.y * scale, P.z * scale);
+  root.scale.set(scale * Math.max(1e-4, P.s * P.sx), scale * Math.max(1e-4, P.s * P.sy), scale * Math.max(1e-4, P.s));
+  root.rotation.set(0, P.ry, P.rz);
+  const ys = scale * P.s * P.sy;   // Beam: the hologram line and the struts follow the solid part
+  sphere.setIntro(P.rev, P.core, { glow: P.glow, holo: P.holoOp >= 0 ? { op: P.holoOp, y: P.y * scale + P.hy * ys, w: .12 * ys, band: P.band, frame: P.core } : null });
+  let trail = null;
+  if (I.k === 'fly') { const e = .004, P2 = introPose(I.k, I.dir, Math.min(1, p + e), ctx); trail = { v: (P2.x - P.x) / (e * I.len) }; }
+  backdrop.drive(I.k, P, scale, camera.position.z, t / 1000, trail);
+  if (I.k === 'fall') {   // the shake, in screen pixels: the camera moves the other way
+    const [dx, dy] = FALL.shake(t / 1000, P), px = 2 * worldHalfH / innerHeight;
+    camera.position.x = -dx * px; camera.position.y = dy * px;
+  }
+  if (p >= 1 && endIntro() === 'out') { gone = true; root.visible = false; }
+}
 
 // Claude-app panel behind the flat rows (and behind the core, so the core still glows in front of it)
 const PANEL_Z = -2;
@@ -92,14 +138,14 @@ const cap = document.body.appendChild(document.createElement('div')); cap.id = '
 const lis = document.body.appendChild(document.createElement('div')); lis.id = 'lis'; lis.textContent = 'Listening…';   // voice chat window (below)
 // update pill (UpdateButton_Spec): above the folded sphere, only while an update is ready (hidden while the rows are spread)
 const upd = document.body.appendChild(document.createElement('div')); upd.id = 'upd'; let updS = null;
-function placeUpd() { upd.style.left = cx + 'px'; upd.style.top = Math.max(6, cy - scale * pxPerUnit - 44) + 'px'; }
+function placeUpd() { upd.style.left = cx + 'px'; upd.style.top = Math.max(6, cy - scale * pxPerUnit - 44) + 'px'; }   // the same spot with the sphere open or closed
 function showUpd(s) {
   updS = s; const on = !!s && s.kind !== 'none';
   upd.textContent = !on ? '' : s.waiting ? 'Updating after the swap…' : s.kind === 'dev' ? 'Restart to update' : `Update to ${s.version}`;
-  upd.title = on && s.notes ? s.notes : ''; upd.classList.toggle('wait', !!(on && s.waiting)); upd.classList.toggle('on', on && !spreadOn);
+  upd.title = on && s.notes ? s.notes : ''; upd.classList.toggle('wait', !!(on && s.waiting)); upd.classList.toggle('on', on);
   if (on) placeUpd();
 }
-const overUpd = (x, y) => { if (!upd.classList.contains('on')) return false; const r = upd.getBoundingClientRect(); return x >= r.left - 4 && x <= r.right + 4 && y >= r.top - 4 && y <= r.bottom + 4; };
+const overUpd = (x, y) => { if (!upd.classList.contains('on')) return false; const r = upd.getBoundingClientRect(); return x >= r.left - 12 && x <= r.right + 12 && y >= r.top - 12 && y <= r.bottom + 12; };   // a generous zone: it wins over the sphere's hover
 upd.addEventListener('click', e => { e.stopPropagation(); if (updS && !updS.waiting) window.sphere.updateInstall(); });
 window.sphere.update().then(showUpd); window.sphere.onUpdate(showUpd);
 let chatOn = false, lisT = 0;
@@ -142,10 +188,10 @@ function labelScale() {
 let coverAt = 0, coverBusy = false, px = -1, py = -1, holdTill = 0;
 function pointer(x, y) {
   px = x; py = y;
-  const o = inside(x, y) || overChips(x, y) || overUpd(x, y);
-  if (o && !spreadOn && !coverBusy && performance.now() - coverAt > 200) {
+  const o = inside(x, y) || overChips(x, y) || overUpd(x, y) || overSwapCard(x, y);
+  if (o && !spreadOn && !intro && !coverBusy && !overUpd(x, y) && !overSwapCard(x, y) && performance.now() - coverAt > 200) {   // (not while the sphere arrives or leaves)
     coverAt = performance.now(); coverBusy = true;
-    window.sphere.covered().then(c => { coverBusy = false; if (!c && !spreadOn && inside(px, py)) startSpread(); }, () => { coverBusy = false; });
+    window.sphere.covered().then(c => { coverBusy = false; if (!c && !spreadOn && inside(px, py) && !overUpd(px, py)) startSpread(); }, () => { coverBusy = false; });
   }
   if (o) holdTill = 0;   // a voice "tile view" holds until the pointer has been on the rows
   closeAt = !o && spreadOn && !busy() && autoFold && performance.now() > holdTill ? closeAt || performance.now() + CLOSE_MS : 0;  // off the rows: fold back after a few seconds
@@ -175,7 +221,7 @@ function setHover(m) {
   if (m === hovered) return;
   if (hovered) { setPanelHover(hovered.material, false); sphere.lift(hovered); }
   hovered = m;
-  if (m) { setPanelHover(m.material, true); const a = -sphere.shell.rotation.y; sphere.lift(m, 0.15 * Math.sin(a), 0.15 * Math.cos(a)); }
+  if (m) { setPanelHover(m.material, true); const a = -sphere.shell.rotation.y; if (!(m.userData.session && m.userData.session.newTile)) sphere.lift(m, 0.15 * Math.sin(a), 0.15 * Math.cos(a)); }   // the action tiles only light up: a lift shifts them a lot in the corner
   document.body.style.cursor = m ? 'pointer' : '';
 }
 // right-click on a session tile: its settings chip bar (SessionConsole_Stage4 Q1); anywhere else closes it
@@ -189,13 +235,14 @@ function overChips(x, y) {
 const within = (e, sel) => e.composedPath().some(n => n instanceof Element && n.matches(sel));
 addEventListener('contextmenu', e => {
   e.preventDefault();
-  if (within(e, '#bar, #top, #sres, #rlist, #con, #chips, .cmenu')) return;
+  if (within(e, '#bar, #top, #sres, #rlist, .bcard, #con, #chips, .cmenu')) return;
   const m = spreadOn && spread > 0.9 ? tileAt(e.clientX, e.clientY) : null, s = m && m.userData.session;
   if (s && (s.link || (s.reader && manageOn)) && !s.newTile && !s.press && !overlayOn) chipBar.open(s, e.clientX, e.clientY); else chipBar.close();
 });
 addEventListener('click', e => {
+  if (intro) { if (intro.dir === 'in') { intro.t0 = -1e9; wake(); } return; }   // a click during the start animation skips it
   if (chipBar.on) { if (!chipBar.contains(e.target)) chipBar.close(); return; }   // a click outside only closes the bar
-  if (within(e, '#bar button, #bar .dd, #top button, #top .srow, #top .sfrow, #sres, #rlist, #con')) return;   // the rows' empty space counts as outside
+  if (within(e, '#bar button, #bar .dd, #top button, #top .srow, #top .sfrow, #sres, #rlist, .bcard, #con')) return;   // the rows' empty space counts as outside
   const m = spreadOn && spread > 0.9 ? tileAt(e.clientX, e.clientY) : null;
   const s = m && m.userData.session;
   const hd = !s && spreadOn && spread > 0.9 ? headerAt(e.clientX, e.clientY) : null;
@@ -206,6 +253,8 @@ addEventListener('click', e => {
 // a tile's press (view plate / header) opens its card; a session opens its conversation in the wide card (Session Console), or with
 // Shift its chat in the Claude window; false when it has neither
 function openTile(s, header, shift) {
+  if (s && s.backlog) { openBacklog(s.backlog); return true; }
+  if (s && s.newProject && !header) { window.sphere.openNewProject(); return true; }
   if (s && s.newTile && !header) { openConsole(null); return true; }
   if (s && s.press) { if (con.close()) keysOff(); openPress(s.press, s.routine && !header ? 'detail' : 'wide'); return true; }
   if (s && (s.link || s.reader) && !shift && !header) { openConsole(s); return true; }
@@ -239,6 +288,62 @@ window.sphere.onKeys?.(() => {
 });
 addEventListener('blur', keysOff);
 const keyV = new THREE.Vector3();
+// swap card (SwapCard_Spec): over the tile of the session that needs a swap (the soonest countdown first; the others get a
+// small badge). The folded sphere stops and turns that tile to the front; the card follows the tile.
+const swc = document.body.appendChild(document.createElement('div')); swc.id = 'swapcard';
+const swcV = new THREE.Vector3(), swcBadges = [];
+let swcMesh = null, swcKey = '', swcPickAt = 0;
+const SWC_RANK = { countdown: 0, needs: 1, review: 2, swapping: 3 };
+const SWC_BTNS = { countdown: [['swap', 'Swap now'], ['noswap', 'Cancel'], ['swapnew', 'New session'], ['open', 'Open']],
+  needs: [['swap', 'Swap now'], ['swapnew', 'New session'], ['noswap', 'Skip'], ['open', 'Open']], swapping: [['open', 'Open']],
+  review: [['report', 'Open report'], ['dismiss', 'Dismiss'], ['open', 'Open']] };   // a land review FAIL (ReviewVerdicts_Spec)
+function swcPoint(m) {   // the tile's middle in window pixels, and whether it faces the camera
+  const d = m.geometry.userData; m.localToWorld(swcV.copy(spread > 0.5 ? d.fc : d.cc));
+  const front = spread > 0.5 || swcV.z > 0.05; swcV.project(camera);
+  return { x: (swcV.x + 1) / 2 * innerWidth, y: (1 - swcV.y) / 2 * innerHeight, front };
+}
+function swcBuild(s) {
+  const c = s.swapCard; swc.className = 'on ' + c.kind; swc.replaceChildren();
+  const t = document.createElement('div'); t.className = 't'; t.textContent = s.title || 'Session';
+  const x = document.createElement('div'); x.className = 'x'; x.textContent = c.text;
+  const b = document.createElement('div'); b.className = 'b';
+  for (const [act, label] of SWC_BTNS[c.kind] || []) { const e = document.createElement('button'); e.dataset.act = act; e.textContent = label; b.appendChild(e); }
+  swc.append(t, x, b);
+}
+function swapCardFrame(dt) {
+  if (performance.now() - swcPickAt > 150) {
+    swcPickAt = performance.now();
+    const ms = sphere.meshes().filter(m => m.visible && m.userData.session && m.userData.session.swapCard)
+      .sort((a, b) => { const p = a.userData.session.swapCard, q = b.userData.session.swapCard; return SWC_RANK[p.kind] - SWC_RANK[q.kind] || (p.endsAt || 0) - (q.endsAt || 0); });
+    swcMesh = ms[0] || null;
+    while (swcBadges.length < ms.length - 1) { const e = document.body.appendChild(document.createElement('div')); e.className = 'swb'; swcBadges.push(e); }
+    swcBadges.forEach((e, i) => { e._m = ms[i + 1] || null; if (!e._m) e.style.display = 'none'; else e.textContent = e._m.userData.session.swapCard.kind === 'review' ? 'review' : 'swap'; });
+    const s = swcMesh && swcMesh.userData.session, key = s ? `${s.sessionId}|${s.swapCard.kind}|${s.swapCard.text}|${s.title}` : '';
+    if (key !== swcKey) { swcKey = key; if (s) swcBuild(s); else swc.className = ''; }
+  }
+  for (const e of swcBadges) if (e._m) { const p = swcPoint(e._m); e.style.display = p.front ? 'block' : 'none'; e.style.left = p.x + 'px'; e.style.top = p.y + 'px'; }
+  if (!swcMesh) return;
+  if (!spreadOn && !intro) {   // turn the tile to the front (the shortest way) and hold the spin
+    sphere.shell.worldToLocal(swcMesh.localToWorld(swcV.copy(swcMesh.geometry.userData.cc)));
+    const d = Math.atan2(Math.sin(-Math.atan2(swcV.x, swcV.z) - sphere.shell.rotation.y), Math.cos(-Math.atan2(swcV.x, swcV.z) - sphere.shell.rotation.y));
+    sphere.shell.rotation.y += d * Math.min(1, dt * 3); spin = 0;
+  }
+  const p = swcPoint(swcMesh), c = swcMesh.userData.session.swapCard;
+  swc.style.left = p.x + 'px'; swc.style.top = p.y + 'px'; swc.classList.toggle('away', !p.front || overlayOn);
+  if (c.kind === 'countdown') {
+    const sec = Math.ceil((c.endsAt - Date.now()) / 1000), x = swc.querySelector('.x');
+    if (x) x.textContent = sec > 0 ? `${c.text} in ${sec} s` : `${c.text} when its turn ends`;
+  }
+}
+const overSwapCard = (x, y) => { if (!swc.classList.contains('on') || swc.classList.contains('away')) return false; const r = swc.getBoundingClientRect(); return x >= r.left - 4 && x <= r.right + 4 && y >= r.top - 4 && y <= r.bottom + 4; };
+swc.addEventListener('click', e => {
+  e.stopPropagation();
+  const act = e.target.closest?.('button')?.dataset.act, s = swcMesh && swcMesh.userData.session; if (!act || !s) return;
+  if (act === 'open') openTile(s);
+  else if (s.swapCard.kind === 'review') window.sphere.manage({ act: 'review-' + act, id: s.sessionId, branch: s.swapCard.branch }).then(r => { if (r && r.ok === false) console.warn('review card:', r.why); });
+  else window.sphere.manage({ act, id: s.sessionId });
+  swcPickAt = 0;
+});
 function tileScreen(m) {   // the plate's middle in the rows, in window pixels
   m.localToWorld(keyV.copy(m.geometry.userData.fc)).project(camera);
   return { x: (keyV.x + 1) / 2 * innerWidth, y: (1 - keyV.y) / 2 * innerHeight };
@@ -260,10 +365,10 @@ function stepTile(dx, dy) {
   }
   if (best) setHover(best);
 }
-function closeCard() { overlayOn = false; barCard = ''; rlist.style.display = 'none'; rlist.classList.remove('edit'); if (rEditing) { rEditing = false; keysOff(); } if (con.close()) keysOff(); window.sphere.overlayClose(); }
+function closeCard() { overlayOn = false; barCard = ''; if (blog.close()) keysOff(); dig.close(); rlist.style.display = 'none'; rlist.classList.remove('edit'); if (rEditing) { rEditing = false; keysOff(); } if (con.close()) keysOff(); overlayClose(); }
 // the console takes the wide card's place (no Claude window); the reply box needs the keyboard, so the window takes focus
 function openConsole(s, hit, folder) {   // s null: the New session form alone (folder picked there); hit: a search hit to show
-  if (overlayOn && !con.on) window.sphere.overlayClose();
+  if (overlayOn && !con.on) overlayClose();
   overlayOn = true; barCard = ''; cardKind = 'wide'; rlist.style.display = 'none'; prevFor = null; prev.style.display = 'none'; if (s) { con.open(s, hit); con.feed(realFeed); } else con.openNew(folder);
 }
 function openPress(name, kind) {
@@ -280,8 +385,9 @@ function syncFold(now) {
 // frame pacing: the frame-rate setting; folded and idle at most 30 fps; folded and covered by other windows about 2 fps
 // (the clocks keep going, frames are only drawn less often)
 let occluded = false, timer = 0, lastT = 0;
+setInterval(() => window.sphere.beat?.(), 5000);   // heartbeat for the main-process watchdog
 window.sphere.onOccluded?.(v => { occluded = !!v; if (!occluded) wake(); });
-const restful = () => !askPulse && !chatOn && !spreadOn && spread === 0 && !over && !closeAt && !(talking && talking.on) && Math.abs(level - IDLE) < 0.01 && Math.abs(scaleTarget - scale) < 1e-3;
+const restful = () => !intro && !askPulse && !chatOn && !spreadOn && spread === 0 && !over && !closeAt && !(talking && talking.on) && Math.abs(level - IDLE) < 0.01 && Math.abs(scaleTarget - scale) < 1e-3;
 function paceMs() {
   if (!restful()) return FRAME_MS;
   if (occluded) return 500;
@@ -304,6 +410,7 @@ function frame(t) {
   }
   else if (feedDirty || rowsKey() !== layoutKey) layoutRows();
   sphere.shell.rotation.y += SPIN * spin * dt;
+  swapCardFrame(dt);
   const spreadTo = spreadOn && !respread ? 1 : 0;
   spread += (spreadTo - spread) * Math.min(1, dt * 7);
   if (Math.abs(spread - spreadTo) < 0.002) spread = spreadTo;
@@ -313,7 +420,7 @@ function frame(t) {
   if (panel.visible) placePanel();
   placeBar();
   scale += (scaleTarget - scale) * Math.min(1, dt * (respread ? 4 : 2));   // quicker while the rows wait to spread again
-  sphere.root.scale.setScalar(scale); reportArea();
+  sphere.root.scale.setScalar(scale); introFrame(t); reportArea();
   // speaking: the core follows the voice's loudness (pauses fall back to the idle glow); hover / open rows: full
   let voice = 0;
   if (talking && talking.on && glowOnSpeech) voice = talking.env ? talking.env[Math.floor((Date.now() - talking.start) / talking.step)] || 0 : 1;
@@ -324,6 +431,21 @@ function frame(t) {
   sphere.setGlow(null, level);
   TIME.value = t / 1000;
   if (renderer) renderer.render(scene, camera);
+  if (perf.on) perfFrame(t);
+}
+// performance tests (SPHERE_PERF): frame rate, frame gaps (median / 95th / worst, gaps over 50 ms) and time spent per frame, every 5 s
+const perf = { on: false, last: 0, iv: [], work: 0, n: 0, t0: 0, fx: [], fxWork: 0 };   // fx: the frames while a start or close animation plays
+window.sphere.perfOn?.().then(v => { perf.on = !!v; perf.t0 = performance.now(); }, () => {});
+function perfFrame(t) {
+  const now = performance.now();
+  if (perf.last) { perf.iv.push(t - perf.last); if (intro) perf.fx.push(t - perf.last); } perf.last = t; perf.work += now - t; perf.n++;
+  if (intro) perf.fxWork += now - t;
+  if (now - perf.t0 < 5000) return;
+  const a = perf.iv.sort((x, y) => x - y), q = k => a.length ? +a[Math.min(a.length - 1, Math.floor(a.length * k))].toFixed(1) : 0;
+  window.sphere.perf?.({ fps: +(perf.n * 1000 / (now - perf.t0)).toFixed(1), p50: q(.5), p95: q(.95), max: q(1), long: a.filter(x => x > 50).length,
+    workMs: +(perf.work / Math.max(1, perf.n)).toFixed(2), intro: !!intro, spread: +spread.toFixed(2), webgl: !!renderer,
+    fxN: perf.fx.length, fxMax: perf.fx.length ? +Math.max(...perf.fx).toFixed(1) : 0, fxLong: perf.fx.filter(x => x > 50).length, fxWork: +(perf.fxWork / Math.max(1, perf.fx.length)).toFixed(2) });
+  perf.iv = []; perf.work = 0; perf.n = 0; perf.t0 = now; perf.fx = []; perf.fxWork = 0;
 }
 // the folded sphere's circle in window DIPs, for main's cover check (sent when it moves by a few pixels or settles)
 let area = null;
@@ -341,19 +463,20 @@ requestAnimationFrame(frame);
 // Show tiles: the sphere's feed holds the archived sessions only when a place shows them; the sphere is sized by the tiles on it
 const shows = (where, g) => { const t = S && S[where]; return t ? t[g] !== false : g !== 'archived'; };
 // the "+ New session" tile (SessionConsole_Stage3 Q4): after the active sessions, in the next empty spot; it opens the New session form
-const NEW_TILE = { sessionId: 'new:tile', title: '+ New session', group: 'Active', newTile: true, pct: 0, tokens: null, activity: null, link: null };
+const NEW_PROJECT_TILE = { sessionId: 'new:project', title: '+ New project', group: 'Active', newTile: true, newProject: true, tint: '#8e9aa8', pct: 0, tokens: null, activity: null, link: null };
+const NEW_TILE = { sessionId: 'new:tile', title: '+ New session', group: 'Active', newTile: true, tint: '#d9dde2', pct: 0, tokens: null, activity: null, link: null };
 function sphereFeed(f) {
   const arch = Array.isArray(f.archived) && (shows('tilesSphere', 'archived') || shows('tilesRows', 'archived')) ? f.archived : [];
-  return { ...f, sessions: [...f.sessions, ...(S && S.appControl ? [NEW_TILE] : []), ...arch] };
+  return { ...f, sessions: [...f.sessions, ...(S && S.appControl && S.actionTiles !== false ? [NEW_TILE, NEW_PROJECT_TILE] : []), ...arch] };
 }
 const onSphere = f => f.sessions.filter(s => shows('tilesSphere', tileGroup(s))).length;
 function onFeed(f) {
   if (!f || !Array.isArray(f.sessions)) return;                    // a broken read: keep what is shown
-  realFeed = f; updateWaiting(f); con.feed(f); const sf = sphereFeed(f); scaleTarget = sizeFor(onSphere(sf)); wake(); labelScale();
+  realFeed = f; updateWaiting(f); con.feed(f); blogFeed(f); const sf = sphereFeed(f); scaleTarget = sizeFor(onSphere(sf)); wake(); labelScale();
   if (!view) { if (respread && respread.rebuild && spread > 0) return;   // folding for a rebuild: that rebuild takes this feed (realFeed)
     if (sphere.setFeed(sf)) feedDirty = true; } else if (view === 'projects') showView('projects');
 }
-// ---- bottom bar on the dark panel: Claude app settings | General settings | mode + Theseus settings (mode, core, voice) ----
+// ---- bottom bar on the dark panel: Claude app settings | Session Management | General | Audio | mode + Theseus settings (mode, core, voice) ----
 const BAR_PX = 96;
 // mode colours come from the settings (normal = the core colour)
 const MODES = [['normal', 'Normal', '#3da5ff'], ['worker', 'Worker', '#e67e22'], ['night', 'Night', '#3c60be'], ['weekend', 'Weekend', '#8c50b9'], ['performance', 'Max perf', '#dc3c3c'], ['efficiency', 'Max efficiency', '#2ecc71']];
@@ -378,11 +501,13 @@ function coreColour() {
   sphere.setGlow(g, level); if (typeof g === 'string') upd.style.setProperty('--glow', g);   // the update pill glows in the core's colour
 }
 const bar = document.createElement('div'); bar.id = 'bar';
-bar.innerHTML = `<button class="b" id="bClaude"><span class="i">✳</span>Claude settings</button>
-  <button class="b" id="bGeneral"><span class="i">⬡</span>General settings</button>
+bar.innerHTML = `<button class="b" id="bClaude"><span class="i">✳</span>Claude Settings</button>
+  <button class="b" id="bSessions"><span class="i">☰</span>Session Management</button>
+  <button class="b" id="bGeneral"><span class="i">⬡</span>General Settings</button>
+  <button class="b" id="bAudio"><span class="i">♪</span>Audio Settings</button>
   <button class="b" id="bWait" style="display:none" title="Open the next session waiting on you"><span class="i">●</span><span class="n"></span></button>
   <div class="r"><div class="dd" id="mode"><div class="cur"><span class="dot"></span><span class="t">Mode</span><span class="car">▾</span></div><div class="list"></div></div>
-  <button class="b" id="bTheseus"><span class="i">⚙</span>Theseus settings</button></div>`;
+  <button class="b" id="bTheseus"><span class="i">⚙</span>Theseus Settings</button></div>`;
 document.body.appendChild(bar);
 const ddList = bar.querySelector('.list'), dd = bar.querySelector('#mode');
 // waiting chip: sessions waiting on your answer (their tiles pulse yellow); a click opens the next one in turn
@@ -415,7 +540,7 @@ addEventListener('click', e => { if (!e.target.closest?.('#mode')) dd.classList.
 function busy() { return overlayOn || keysOn || chipBar.on || sRes.style.display === 'block' || keepCardsOpen && (dd.classList.contains('open') || rlist.style.display === 'block'); }
 function fold() { spreadOn = false; closeAt = 0; dd.classList.remove('open'); chipBar.close(); }   // a view ends once the panel has folded (frame)
 
-// ---- views: Artifacts / Projects / Routines turn the panel's tiles into their own plates (spec: SessionSphere_Views_Spec.md) ----
+// ---- views: Artifacts / Projects / Routines turn the panel's tiles into their own plates (spec: Theseus_Views_Spec.md) ----
 let view = null, realFeed = { sessions: [] }, lastSnap = {};
 const VIEW_OF = { Artifacts: 'artifacts', 'Projects Beta': 'projects', Projects: 'projects', Routines: 'routines' };
 const ROUTINE = /^(Idle|Unread response|Running|Failed|Error|Paused) (.+)$/;
@@ -457,6 +582,16 @@ function markView() { for (const b of top.querySelectorAll('.row [data-press]'))
 const rlist = document.createElement('div'); rlist.id = 'rlist'; document.body.appendChild(rlist);
 // Session Console view (console.js): a session's conversation + reply box in the wide card
 const needKeys = () => { if (!keysOn) { keysOn = true; window.sphere.keyFocus(true); closeAt = 0; } };
+// the backlog card (no Claude window): narrow, centred
+const blog = createBacklog({ needKeys, close: () => closeCard(), rect: () => { cardKind = 'narrow'; return overlayRect(); } });
+let blogKey = '';
+function blogFeed(f) { const k = f.sessions.filter(s => s.backlog).map(s => s.backlog).join(); if (k !== blogKey) { blogKey = k; blog.refresh(); } }
+// the digest card: the morning digest, "what happened" and Settings' Show the digest
+const dig = createDigest({ close: () => closeCard(), rect: () => { cardKind = 'narrow'; return overlayRect(); } });
+function openDigest(d) { if (overlayOn) { if (con.close()) keysOff(); blog.close(); overlayClose(); } overlayOn = true; barCard = ''; cardKind = 'narrow'; dig.show(d); }
+window.sphere.onDigest(d => { if (!d) return; holdTill = performance.now() + VOICE_HOLD_MS; closeAt = 0; if (spreadOn) openDigest(d); else { startSpread(); setTimeout(() => openDigest(d), 700); } });
+function openBacklog(id) { if (overlayOn) { dig.close(); if (con.close()) keysOff(); overlayClose(); } overlayOn = true; barCard = ''; cardKind = 'narrow'; blog.open(id); }
+window.sphere.onBacklog(() => { holdTill = performance.now() + VOICE_HOLD_MS; closeAt = 0; if (spreadOn) openBacklog(); else { startSpread(); setTimeout(openBacklog, 700); } });   // Settings' Open the backlog
 const con = createConsole({ needKeys, close: closeCard, openClaude: s => { keysOff(); overlayOn = true; barCard = ''; cardKind = 'narrow'; window.sphere.overlayOpen(overlayRect(), s.link).then(() => setTimeout(refreshClaude, 800)); } });
 // a routine row gets Edit prompt when a local prompt (~/.claude/scheduled-tasks/<id>/SKILL.md) matches its name;
 // local prompts no row matches are listed under the routines
@@ -486,7 +621,7 @@ const refreshLocal = () => window.sphere.routinePrompts('list').then(r => {
 async function editPrompt(id) {
   const r = await window.sphere.routinePrompts('read', id); if (!r || !r.ok) return;
   const f = overlayRect(), x0 = cardKind === 'detail' ? f.x - RLIST_W - 12 : f.x;
-  rEditing = true; needKeys(); rlist.classList.add('edit'); window.sphere.overlayClose();
+  rEditing = true; needKeys(); rlist.classList.add('edit'); overlayClose();
   rlist.innerHTML = `<div class="h">Edit prompt: ${esc(id)}</div><textarea class="rta" spellcheck="false"></textarea>` +
     '<div class="rbar"><span class="rwhy"></span><button class="rb" data-x="cancel">Cancel</button><button class="rb go" data-x="save">Save</button></div>';
   const ta = rlist.querySelector('.rta'); ta.value = r.text; ta._id = id;
@@ -519,7 +654,9 @@ function barButton(id, kind, open) {
   };
 }
 barButton('bClaude', 'wide', () => window.sphere.claudeSettings(overlayRect()).then(() => setTimeout(refreshClaude, 800)));
+barButton('bSessions', 'narrow', () => window.sphere.openSettings('sessions', overlayRect()));
 barButton('bGeneral', 'narrow', () => window.sphere.openSettings('general', overlayRect()));
+barButton('bAudio', 'narrow', () => window.sphere.openSettings('audio', overlayRect()));
 barButton('bTheseus', 'narrow', () => window.sphere.openSettings('theseus', overlayRect()));
 let barO = -1;
 function placeBar() {
@@ -527,18 +664,22 @@ function placeBar() {
   if (!o && !barO) return;                                           // folded: nothing to move
   barO = o;
   for (const el of [bar, top]) { el.style.opacity = o; el.style.pointerEvents = o > 0.9 ? 'auto' : 'none'; }
-  frameEl.style.display = overlayOn && !con.on && o > 0.9 ? 'block' : 'none';
+  frameEl.style.display = overlayOn && !con.on && !blog.on && !dig.on && o > 0.9 ? 'block' : 'none';
   if (!o) { dd.classList.remove('open'); return; }
   const r = sphere.flatRect(), k = scale * pxPerUnit * persp();
   const L = Math.max(8, cx + (r.x0 - 0.1) * k + 16) + 'px', R = Math.max(8, innerWidth - (cx + (r.x1 + 0.1) * k) + 16) + 'px';
   bar.style.left = top.style.left = L; bar.style.right = top.style.right = R;
   if (con.on) { const f = overlayRect(); con.place(f.x, f.y - TITLE_PX, f.w, f.h + TITLE_PX); }
+  else if (blog.on || dig.on) { blog.place(); dig.place(); }
   else if (overlayOn) { const f = overlayRect(); Object.assign(frameEl.style, { left: f.x - 1 + 'px', top: f.y - 1 + 'px', width: f.w + 2 + 'px', height: f.h + 2 + 'px' }); }
 }
 
 // ---- top groups on the dark panel: Claude's title-bar controls, then rows New/Projects/..., Routines, Pinned ----
 // They mirror the Claude window (read through UI Automation); a click presses the same button there, with the window
 // shown over the background.
+// closes asked from here and not yet done: the 'overlay-closed' that answers one comes late, after a new card may have opened
+let closing = 0;
+function overlayClose() { closing++; window.sphere.overlayClose().catch(() => {}).finally(() => closing--); }
 let overlayOn = false, csKey = '', cardKind = 'narrow';   // card: 'narrow' for chats, 'wide' for list and gallery pages
 const top = document.createElement('div'); top.id = 'top';
 document.body.appendChild(top);
@@ -634,7 +775,7 @@ function searchClose() { sTok++; clearTimeout(sT); sRes.style.display = 'none'; 
 function searchRun() {
   clearTimeout(sT);
   const t = sIn.value.trim(); if (t.length < 2) { searchClose(); return; }
-  const o = filterOpts(); if (o.why) { searchShow([], o.why); return; }
+  const o = filterOpts(); if (o.why) { sTok++; searchShow([], o.why); return; }   // (a search still running is dropped)
   const my = ++sTok; searchShow([], 'Searching…');
   window.sphere.search(t, o).then(r => {
     if (my !== sTok || (r && r.why === 'cancelled')) return;
@@ -711,7 +852,7 @@ sRes.addEventListener('click', e => {
 let snapTok = 0, snapShown = 0;   // a slow older snapshot never overwrites a newer one (a slow one still shows when none newer came back)
 function refreshClaude(tick) { const my = ++snapTok; window.sphere.claudeSnap(tick).then(s => { if (my < snapShown || !s) return; snapShown = my; lastSnap = s; renderTop(s); markView(); }, () => {}); }
 setInterval(() => { if (spreadOn) refreshClaude(true); }, 4000);
-window.sphere.onOverlayClosed(() => { if (rEditing) return; overlayOn = con.on; barCard = ''; rlist.style.display = 'none'; if (view === 'artifacts') showView('artifacts'); });   // fresh pictures
+window.sphere.onOverlayClosed(() => { if (rEditing || blog.on || dig.on || (closing && overlayOn)) return; overlayOn = con.on; barCard = ''; rlist.style.display = 'none'; if (view === 'artifacts') showView('artifacts'); });   // fresh pictures
 // the Claude window's place over the background: centred on the panel (wide: across it), between the top groups and the bottom bar
 function overlayRect() {
   const r = sphere.flatRect(), k = scale * pxPerUnit * persp();
@@ -726,7 +867,7 @@ setInterval(() => window.sphere.mode().then(showMode), 3000);
 
 let rebuild0 = false;
 function applySettings(s) {
-  const bT = document.getElementById('bTheseus'); if (bT) bT.lastChild.textContent = (s.name || 'Theseus') + ' settings';
+  const bT = document.getElementById('bTheseus'); if (bT) bT.lastChild.textContent = (s.name || 'Theseus') + ' Settings';
   con.setAppControl(s.appControl);
   const md = document.getElementById('mode'); if (md) md.style.display = s.live && s.live.modes && !s.live.modes.on ? 'none' : '';   // the Modes add-on
   FRAME_MS = s.fps > 0 ? 1000 / s.fps : 0;
@@ -738,7 +879,7 @@ function applySettings(s) {
   const lr = sphere.setLabelRes(s.labelRes), fsh = sphere.setFlatShape(s.flatShape);
   const tf = sphere.setFilters({ sphere: s.tilesSphere, rows: s.tilesRows }) || lr || fsh;   // label size and flat shape rebuild the tiles too (folded first when spread)
   if (S && S.tileAlign !== s.tileAlign) { sphere.setAlign(s.tileAlign); if (spreadOn) startSpread(); } else sphere.setAlign(s.tileAlign);
-  if (S && !!S.appControl !== !!s.appControl) rebuild0 = true;   // the New session tile comes or goes
+  if (S && (!!S.appControl !== !!s.appControl || (S.actionTiles !== false) !== (s.actionTiles !== false))) rebuild0 = true;   // the New session tile comes or goes
   S = s; modeColours(s); showMode(curMode);
   CLOSE_MS = s.closeDelay * 1000; IDLE = s.idleGlow; SPIN = s.spinMinutes > 0 ? (2 * Math.PI) / (s.spinMinutes * 60) : 0;
   glowOnSpeech = s.glowOnSpeech; autoFold = s.autoFold !== false; keepCardsOpen = s.keepCardsOpen !== false; sphere.setActivity(s.tileActivity !== false); sphere.setRing(s.contextRing); captionOn = s.speechCaption !== false; if (!captionOn) cap.classList.remove('on');
@@ -793,6 +934,7 @@ function caption(t) {
 const VOICE_HOLD_MS = 20000;
 window.sphere.onVoiceOpen?.(a => {
   if (!a) return;
+  if (a.demoMode) { window.sphere.mode().then(showMode); return; }   // demo video: the mode file was just written, read it now (not at the next 3 s poll)
   if (a.spread) { holdTill = performance.now() + VOICE_HOLD_MS; closeAt = 0; if (!spreadOn) startSpread(); return; }
   if (a.fold) { holdTill = 0; if (overlayOn) closeCard(); fold(); return; }
   if (!spreadOn) startSpread();   // the card sits over the rows: spread them (and bring the window in front) first
@@ -818,6 +960,7 @@ window.sphere.onVoiceCard?.(a => {
 });
 window.sphere.onAsk?.(a => {
   if (!a) return;
+  if (a.off) { clearTimeout(capOff); cap.classList.remove('on'); askCap = null; askPulse = false; return; }   // demo video: the card goes away
   clearTimeout(capOff);
   askCap = a; askPulse = a.state === 'thinking';
   cap.replaceChildren();

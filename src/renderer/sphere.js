@@ -3,12 +3,12 @@
 // The Session manager tile sits at the front with a gold trim and turns with the shell.
 // Hovering blends every tile from its place on the shell into flat rows: Session Manager / Active / Ungrouped / Parked.
 import * as THREE from '../../node_modules/three/build/three.module.js';
-import { makePanelMaterial, setPanelState, GLOW, ENERGY, TIME, SPREAD, NOISE_TEX, NOISE_GLSL } from './panel.js';
+import { makePanelMaterial, setPanelState, GLOW, ENERGY, TIME, SPREAD, HOLO, IGLOW, NOISE_TEX, NOISE_GLSL } from './panel.js';
 import { swapPose, swapDrive, swapMesh, SWAP_LEN } from './swapfx.js';
 
 const V3 = THREE.Vector3;
 // the Show tiles settings' group of a session: mgr / active / parked / ungrouped / archived
-export const tileGroup = s => ({ 'Session Manager': 'mgr', Active: 'active', Parked: 'parked', Archived: 'archived' }[s.group] || 'ungrouped');
+export const tileGroup = s => ({ 'Session Manager': 'mgr', Active: 'active', Parked: 'parked', Backlog: 'parked', Archived: 'archived' }[s.group] || 'ungrouped');
 const FLAT_Z = 1.15;          // flat rows sit in front of the shell (root units)
 const TILE_ASPECT = 1.15;     // hex tile width / height in the flat rows
 
@@ -386,7 +386,11 @@ export function createSphere(scene) {
     ENERGY.value.copy(c);
     GLOW.value.copy(c).multiplyScalar(0.6 * level);
     starMat.uniforms.uColor.value.copy(c); starMat.uniforms.uLevel.value = Math.min(level, 1); starMat.uniforms.uGain.value = gain > 1 ? 1 + (gain - 1) * 0.35 : gain;   // brighter modes: the orb only a little (more washes it out white),
-    halo.scale.setScalar(3.4 * Math.max(1, 1 + (gain - 1) * 0.6));            // the rest is a wider halo and a stronger core light   // bursts light the glow, not a white-out
+    halo.scale.setScalar(3.4 * Math.max(1, 1 + (gain - 1) * 0.6) * Math.max(1e-4, coreK));
+    if (coreK !== 1 || star.scale.x !== 1) {                                 // start / close animations (introfx.js) size the core
+      const k = Math.max(1e-4, Math.min(1, coreK)); star.scale.setScalar(k); cageIn.scale.setScalar(k); cageOut.scale.setScalar(k);
+      inner.scale.setScalar(2.3 * Math.max(1e-4, Math.min(1.6, coreK)));
+    }            // the rest is a wider halo and a stronger core light   // bursts light the glow, not a white-out
     coreLight.color.copy(c); coreLight.intensity = (0.4 + 3 * level) * gain;
     cageIn.rotation.y = cageT * 0.04; cageOut.rotation.y = -cageT * 0.025; cageOut.rotation.x = 0.3;
     const fade = 1 - spreadF * 0.85;
@@ -442,18 +446,18 @@ export function createSphere(scene) {
   }
 
   // the flat rows' groups; a group change alone (Active -> Parked) only regroups, the tiles keep their cells
-  const GROUPS = ['Session Manager', 'Active', 'Parked', 'Archived'];
+  const GROUPS = ['Session Manager', 'Active', 'Parked', 'Backlog', 'Archived'];
   function grouped(sess) {
     const bySeat = (a, b) => seatOf(a) - seatOf(b);
     return { mgr: sess.find(s => s.group === 'Session Manager'), active: sess.filter(s => s.group === 'Active').sort(bySeat),
-      parked: sess.filter(s => s.group === 'Parked').sort(bySeat), ungrouped: sess.filter(s => !GROUPS.includes(s.group)).sort(bySeat),
+      parked: sess.filter(s => s.group === 'Parked').sort(bySeat), backlog: sess.filter(s => s.group === 'Backlog'), ungrouped: sess.filter(s => !GROUPS.includes(s.group)).sort(bySeat),
       archived: sess.filter(s => s.group === 'Archived') };   // archived: newest first, as the feed lists them
   }
   function regroup(sess) {
     const custom = lastFeed && lastFeed.groups;
     if (custom) { groupsFor = custom.map(g => [g, sess.filter(s => s.group === g)]).filter(g => g[1].length); return; }
-    const { mgr, active, ungrouped, parked, archived } = grouped(sess.filter(inRows));   // the rows hold only the groups ticked for them
-    groupsFor = [['Session Manager', mgr ? [mgr] : []], ['Active', active], ['Ungrouped', ungrouped], ['Parked', parked], ['Archived', archived]].filter(g => g[1].length);
+    const { mgr, active, ungrouped, parked, backlog, archived } = grouped(sess.filter(inRows));   // the rows hold only the groups ticked for them
+    groupsFor = [['Session Manager', mgr ? [mgr] : []], ['Active', active], ['Ungrouped', ungrouped], ['Parked', parked], ['Backlog', backlog], ['Archived', archived]].filter(g => g[1].length);
   }
   function build(sess) {
     const old = new Map(tiles.map(t => [t.s.sessionId, t]));
@@ -485,8 +489,21 @@ export function createSphere(scene) {
     else {
       if (mgrSh) place(mgr, front, true);
       const shellList = [...active, ...ungrouped, ...parked, ...archived].filter(onShell), rowsList = [...(mgr && !mgrSh ? [mgr] : []), ...[...active, ...ungrouped, ...parked, ...archived].filter(s => !onShell(s))];
-      shellList.forEach((s, i) => { if (order[i]) place(s, order[i], false); });
-      rowsList.forEach((s, i) => { if (order[shellList.length + i]) place(s, order[shellList.length + i], s === mgr, true); });
+      // a project's tiles sit in neighbouring cells (ProjectCreator_Spec): each project grows from a seed cell to the nearest free cells
+      const seat = new Map(), free = order.slice(), take = c => free.splice(free.indexOf(c), 1);
+      const byProj = new Map(); for (const s of shellList) if (s.project) { if (!byProj.has(s.project)) byProj.set(s.project, []); byProj.get(s.project).push(s); }
+      for (const [, ss] of [...byProj].sort((a, b) => b[1].length - a[1].length)) {
+        if (ss.length < 2 || free.length < ss.length) continue;
+        const got = [free[0]]; take(free[0]);
+        while (got.length < ss.length) {
+          const m = got.reduce((a, c) => ({ x: a.x + c.c.x / got.length, y: a.y + c.c.y / got.length, z: a.z + c.c.z / got.length }), { x: 0, y: 0, z: 0 });
+          const d = c => (c.c.x - m.x) ** 2 + (c.c.y - m.y) ** 2 + (c.c.z - m.z) ** 2;
+          const nx = free.reduce((b, c) => (d(c) < d(b) ? c : b)); got.push(nx); take(nx);
+        }
+        ss.forEach((s, i) => seat.set(s, got[i]));
+      }
+      shellList.forEach(s => { const c = seat.get(s) || free.shift(); if (c) place(s, c, false); });
+      rowsList.forEach(s => { const c = free.shift(); if (c) place(s, c, s === mgr, true); });
       try { localStorage.setItem('seats', JSON.stringify(seats)); } catch {}
     }
     // every spot without a session (the 12 pentagons in 'All hexagons', spare cells) holds an energy cell: a shell plate,
@@ -506,13 +523,21 @@ export function createSphere(scene) {
   // row tile size (setting): the fewest columns; more columns = smaller tiles (they still shrink further to fit the height)
   let minCols = 3;
   function setRowSize(sz) { const n = { large: 3, medium: 6, small: 9 }[sz] || 3; if (n === minCols) return false; minCols = n; return true; }
+  // room above the first group for the "Restart to update" pill while the rows are open
+  let updReserve = false, flatUpd = null;
+  const updH = (headH, gap) => headH * 2.2 + gap;
+  function setUpdReserve(on) { on = !!on; if (on === updReserve) return false; updReserve = on; return true; }
+  let actCorner = 'bottom-right';
+  function setActionCorner(c) { c = ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(c) ? c : 'bottom-right'; if (c === actCorner) return false; actCorner = c; return true; }
+  const ACT_K = 1;   // size of the action tiles against a session tile
   function pickCols(W, H) {
     const groups = groupsFor, gap = W * 0.015, headH = Math.min(0.16, H * 0.03);
     let cols = 3, tw = 0, total = 0;
     for (let c = Math.max(minCols, groupsFor.length && lastFeed && lastFeed.groups ? 6 : 3); c <= 24; c++) {
       const w = (W - gap * (c - 1)) / c, h = w / TILE_ASPECT;
-      const rows = groups.reduce((a, [name, l]) => a + (name === 'Session Manager' ? 1.3 : Math.ceil(l.length / c)), 0);
-      cols = c; tw = w; total = groups.length * (headH + gap) + rows * (h + gap);
+      const rows = groups.reduce((a, [name, l]) => a + (name === 'Session Manager' ? 1.3 : Math.ceil(l.filter(x => !x.newTile).length / c)), 0);
+      const act = !groups.some(([n]) => n === 'Session Manager') && groups.some(([, l]) => l.some(x => x.newTile)) ? ACT_K * h + gap : 0;   // the action strip (+ New session / + New project) under the tiles
+      cols = c; tw = w; total = groups.length * (headH + gap) + rows * (h + gap) + act + (updReserve ? updH(headH, gap) : 0);
       if (total <= H) break;
     }
     return { cols, tw, total, gap, headH };
@@ -522,6 +547,12 @@ export function createSphere(scene) {
     const groups = groupsFor, { cols, tw, total, gap, headH } = pickCols(W, H);
     const th = tw / TILE_ASPECT;
     let y = total / 2 + yOff;
+    flatUpd = null;
+    if (updReserve) {
+      const mw = tw * 1.3, first = groups[0] && groups[0][0] === 'Session Manager';   // above the Session manager tile (or the first group)
+      flatUpd = { x: !first || align === 'center' ? 0 : align === 'left' ? -W / 2 + mw / 2 : W / 2 - mw / 2, y: y - updH(headH, gap) / 2 };
+      y -= updH(headH, gap);
+    }
     const byId = new Map(tiles.map(t => [t.s.sessionId, t]));
     const fit = (t, x, yc, w, h) => { const R = t.mesh.geometry.userData.circR; t.flat = { x, y: yc, k: Math.min(w / (2 * R), h / (1.8 * R)) }; };
     const header = (name, x, yc) => {
@@ -537,23 +568,41 @@ export function createSphere(scene) {
       flatRect = { x0: -W / 2, x1: W / 2, y0: yOff - H / 2, y1: yOff + H / 2 };
       addFaces(); return;
     }
+    // the action tiles sit apart from the sessions, in a corner strip (setting): smaller, side by side, New session nearest the screen edge's inner side
+    let actsDone = false;
+    const placeActs = () => {
+      if (actsDone) return;
+      const left = actCorner.endsWith('left'), acts = groups.flatMap(([, l]) => l.filter(x => x.newTile)); if (!left) acts.reverse();
+      if (!acts.length) return;
+      const aw = tw * ACT_K, ah = th * ACT_K;
+      acts.forEach((a, i) => { const t = byId.get(a.sessionId); if (t) fit(t, left ? -W / 2 + aw / 2 + i * (aw + gap) : W / 2 - aw / 2 - i * (aw + gap), y - ah / 2, aw, ah); });
+      y -= ah + gap;
+    };
+    if (actCorner.startsWith('top') && !groups.some(([n]) => n === 'Session Manager')) placeActs();
     for (const [name, l] of groups) {
       header(name, -W / 2 + headH * 4, y - headH / 2);
       y -= headH + gap;
       if (name === 'Session Manager') {
         const t = byId.get(l[0].sessionId), mw = tw * 1.3;
         if (t) fit(t, align === 'left' ? -W / 2 + mw / 2 : align === 'right' ? W / 2 - mw / 2 : 0, y - th * 0.65, mw, th * 1.3);
+        // the action tiles (+ New session / + New project) sit in the manager's row, on the side away from it, as large as the manager tile
+        const acts = groups.flatMap(([, l]) => l.filter(x => x.newTile)), fromRight = align === 'left';
+        acts.forEach((a, i) => { const at = byId.get(a.sessionId); const k = fromRight ? acts.length - 1 - i : i;
+          if (at) fit(at, fromRight ? W / 2 - mw / 2 - k * (mw + gap) : -W / 2 + mw / 2 + k * (mw + gap), y - th * 0.65, mw, th * 1.3); });
+        actsDone = acts.length > 0;
         y -= th * 1.3 + gap;
       } else {
-        l.forEach((s, i) => {
-          const c = i % cols, r = Math.floor(i / cols), rowN = Math.min(cols, l.length - r * cols), t = byId.get(s.sessionId);
+        const reg = l.filter(x => !x.newTile);
+        reg.forEach((s, i) => {
+          const c = i % cols, r = Math.floor(i / cols), rowN = Math.min(cols, reg.length - r * cols), t = byId.get(s.sessionId);
           // tile alignment setting: rows start at the left edge, sit centred, or end at the right edge
           const x = align === 'left' ? -W / 2 + tw / 2 + c * (tw + gap) : align === 'right' ? W / 2 - tw / 2 - (rowN - 1 - c) * (tw + gap) : (c - (rowN - 1) / 2) * (tw + gap);
           if (t) fit(t, x, y - r * (th + gap) - th / 2, tw, th);
         });
-        y -= Math.ceil(l.length / cols) * (th + gap);
+        y -= Math.ceil(reg.length / cols) * (th + gap);
       }
     }
+    if (actCorner.startsWith('bottom') && !actsDone) placeActs();
     flatRect = { x0: -W / 2, x1: W / 2, y0: y, y1: total / 2 + yOff };
     addFaces();
   }
@@ -638,6 +687,16 @@ export function createSphere(scene) {
   const ease = x => 1 - Math.pow(1 - Math.max(0, Math.min(1, x)), 3);
   // busy (full frame rate): a session's rebirth, ripple or sparks; energy-cell renewals are the shell's idle life (30 fps is enough)
   let fxAt = performance.now(), fxBusy = false, sparksUntil = 0, actOn = true;
+  // start / close animations (StartupFx_Spec): introTile(dir) gives [size 0..1, sink] for a tile by its direction in the root's
+  // frame; when it ends, one more pass puts every tile back. coreK sizes the core (setGlow). fx: { holo: { op, y, w, band, frame }, glow }
+  // drives the hologram and tile light in the tile shader (panel.js HOLO / IGLOW); frame fades the struts with the hologram.
+  let introTile = null, introLast = false, coreK = 1;
+  const tmp4 = new V3();
+  function setIntro(fn, k = 1, fx = null) {
+    if (!fn && introTile) introLast = true; introTile = fn || null; coreK = k;
+    const h = fx && fx.holo; HOLO.value.set(h ? h.op : -1, h ? h.y : 0, h ? Math.max(1e-3, h.w) : 1, h ? h.band : 0);
+    IGLOW.value = fx ? fx.glow || 0 : 0; frameMat.opacity = (1 - spreadF) * (h ? h.frame : 1);
+  }
   const ACT_U = [['uWork', 'working'], ['uWait', 'waiting'], ['uIdle', 'idle']];
   function setActivity(on) { actOn = !!on; }
   function fxTile(t, now, dt) {
@@ -651,12 +710,12 @@ export function createSphere(scene) {
     // energy cells renew every 30-90 s on the core's clock (faster in Max performance, slower in Night / Max efficiency)
     if (t.energy && spreadF === 0 && (t.left -= dt * motion.speed) <= 0) { t.left = 30 + Math.random() * 60; if (!t.reborn) { startRebirth(t, null); u = t.mesh.material.userData.u; } }   // its own material now: never drive the shared one
     const part = t.shellOnly || t.rowsOnly;                              // a tile shown in only one of the two places
-    if (!t.reborn && !t.energy && !part) return;
+    if (!t.reborn && !t.energy && !part && !introTile && !introLast) return;
     // energy cells and sphere-only tiles shrink away as the tiles spread flat; rows-only tiles grow in at the end of the spread
     const hide = t.energy || t.shellOnly ? Math.max(0, 1 - spreadF / 0.4) : t.rowsOnly ? Math.max(0, Math.min(1, (spreadF - 0.6) / 0.4)) : 1;
     const r = t.reborn;
-    if (!r && t.restHide === hide) return;                             // settled (no swap, same size as last frame): nothing to move
-    t.restHide = r ? -1 : hide;
+    if (!r && t.restHide === hide && !introTile && !introLast) return;   // settled (no swap, same size as last frame): nothing to move
+    t.restHide = r || introTile ? -1 : hide;
     let P = { sc: 1, fl: 0, ang: 0, sink: 0, vis: true };
     if (r) {
       if (!t.energy) fxBusy = true;
@@ -676,7 +735,8 @@ export function createSphere(scene) {
         u.uHasLabel.value = (r.burst ? t.label : r.label) ? P.labelK : 0;
       }
     }
-    const sc = P.sc * hide;
+    let sc = P.sc * hide;
+    if (introTile) { const iv = introTile(centreOf(t, tmp4).normalize().applyQuaternion(shell.quaternion)); sc *= iv[0]; if (iv[1]) P = { ...P, sink: P.sink + iv[1] }; }
     const C = centreOf(t, tmp), nrm = P.sink || P.ang ? normalOf(t, tmp3) : tmp3;
     swapMesh(t.mesh, P, sc, C, nrm);
     t.mesh.userData.swapping = !!(P.sink || P.ang);
@@ -700,6 +760,7 @@ export function createSphere(scene) {
     const now = performance.now(), dt = Math.min(1, (now - fxAt) / 1000); fxAt = now; fxBusy = false;
     for (const t of tiles) fxTile(t, now, dt);
     for (const t of cells5) fxTile(t, now, dt);
+    introLast = false; if (introTile) fxBusy = true;
     sparkCloud.visible = sparks.length > 0;
     if (now < sparksUntil) fxBusy = true;
     if (!sparks.length) return;
@@ -791,14 +852,14 @@ export function createSphere(scene) {
       if (!feed.view && was && s.renewedAt && s.renewedAt !== was.renewedAt && Date.now() - s.renewedAt < 120000 && !t.reborn) startRebirth(t, { ...was, pct: s.renewedPct != null ? s.renewedPct : was.pct });
       if (!feed.view && was && was.tokens != null && s.tokens != null && s.tokens - was.tokens >= 1500) t.ripple = performance.now();   // a working turn
       // mid-rebirth the old label shows only until the burst; after it the new one (a feed then must not bring the old back)
-      setPanelState(t.mesh.material, { pct: (t.reborn && t.reborn.mode > 1 && !t.reborn.burst ? t.reborn.pct : s.pct) || 0, parked: s.group === 'Parked' || s.group === 'Archived' || s.dim, gold: t.mgr || s.gold, label: s.face ? null : t.reborn && !t.reborn.burst ? t.reborn.label : t.label });
+      setPanelState(t.mesh.material, { pct: (t.reborn && t.reborn.mode > 1 && !t.reborn.burst ? t.reborn.pct : s.pct) || 0, parked: s.group === 'Parked' || s.group === 'Archived' || s.dim, gold: t.mgr || s.gold, tint: s.tint || null, stuck: !!s.stuck, done: !!s.doneTick, label: s.face ? null : t.reborn && !t.reborn.burst ? t.reborn.label : t.label });
       t.mesh.userData.session = s;
       ringOf(t);
     }
     return changed;
   }
 
-  return { root, shell, setFeed, setRing, setRowSize, setMinCells, setOpenSpots, setFilters, setLabelRes, setLabelScale, setAlign, setFlatShape, setGlow, setMotion, setActivity, setSwap, prepareFlat, setSpread, lift, busy: () => fxBusy, cellCount: () => cellCount, flatRect: () => flatRect,
+  return { root, shell, setFeed, setRing, setRowSize, setActionCorner, setUpdReserve, updSpot: () => flatUpd, setMinCells, setOpenSpots, setFilters, setLabelRes, setLabelScale, setAlign, setFlatShape, setGlow, setMotion, setActivity, setSwap, setIntro, prepareFlat, setSpread, lift, busy: () => fxBusy, cellCount: () => cellCount, flatRect: () => flatRect,
   meshes: () => tiles.filter(t => !t.shellOnly).map(t => t.mesh),   // picking: sphere-only tiles are gone in the rows
   headerMeshes: () => headers.children.filter(h => h.userData.session) };
 }

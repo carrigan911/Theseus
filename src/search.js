@@ -36,7 +36,7 @@ async function search(sessions, query, opts = {}) {
       let pos = 0, carry = Buffer.alloc(0), carryAt = 0;
       while (pos < size) {
         if (my !== gen) return { ok: false, why: 'cancelled' };
-        if (Date.now() - t0 > TIME) { done = false; break outer; }
+        if (Date.now() - t0 > TIME) { done = false; hits.push(...mine.reverse()); if (hits.length > ALL) hits.length = ALL; break outer; }   // (the hits found so far count)
         const b = Buffer.alloc(Math.min(CHUNK, size - pos)), n = fs.readSync(fd, b, 0, b.length, pos);
         if (n <= 0) break;
         const buf = carry.length ? Buffer.concat([carry, b.subarray(0, n)]) : b.subarray(0, n), base = carry.length ? carryAt : pos;

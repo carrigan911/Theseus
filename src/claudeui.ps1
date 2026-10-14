@@ -83,12 +83,12 @@ public static IntPtr FindMain(int[] pids, bool vis) {
 }
 [DllImport("user32.dll", EntryPoint = "GetWindowThreadProcessId")] public static extern uint GetWindowThreadProcessId2(IntPtr h, out uint pid);
 '@
-# compiled once into %TEMP%\SessionSphere (keyed by the source), later starts only load the DLL; a unique temp name per
+# compiled once into %TEMP%\Theseus (keyed by the source), later starts only load the DLL; a unique temp name per
 # process + a move keeps two helpers starting together from clobbering each other
 $loaded = $false
 try {
   $key = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($def))).Replace('-', '').Substring(0, 12)
-  $dir = Join-Path $env:TEMP 'SessionSphere'; $dll = Join-Path $dir "claudeui_$key.dll"
+  $dir = Join-Path $env:TEMP 'Theseus'; $dll = Join-Path $dir "claudeui_$key.dll"
   if (-not (Test-Path $dll)) {
     New-Item -ItemType Directory -Force $dir | Out-Null
     $tmp = Join-Path $dir "claudeui_$key.$PID.tmp"
@@ -208,11 +208,14 @@ function Invoke-Named($name) {
   if ($e) { return @{ ok = (Press $e) } }
   # sidebar item while the sidebar is hidden: open it, press, hide again
   $show = Find $root 'Show sidebar'; if (-not $show) { return @{ ok = $false; why = 'not found' } }
-  [void](Press $show)
-  for ($k = 0; $k -lt 20 -and -not $e; $k++) { Start-Sleep -Milliseconds 60; $e = Find $root $name }
-  $ok = if ($e) { Press $e } else { $false }
-  Start-Sleep -Milliseconds 150
-  $hide = Find $root 'Hide sidebar'; if ($hide) { [void](Press $hide) }
+  [void](Press $show); $ok = $false
+  try {
+    for ($k = 0; $k -lt 20 -and -not $e; $k++) { Start-Sleep -Milliseconds 60; $e = Find $root $name }
+    $ok = if ($e) { Press $e } else { $false }
+  } finally {
+    Start-Sleep -Milliseconds 150
+    $hide = Find $root 'Hide sidebar'; if ($hide) { [void](Press $hide) }
+  }
   @{ ok = $ok }
 }
 
@@ -220,10 +223,12 @@ function Invoke-Named($name) {
 # sphere's mask window covers it and rounds the corners (a window region is ignored by Chromium's composited window).
 function Place($c) {
   $h = Hwnd; if (-not $h) { return @{ ok = $false } }
+  # a helper started fresh while a card is open (the last one was killed) gets the window's own rect back from Node
+  if (-not $script:saved -and $c.saved -and $c.saved.rect) { $script:saved = @{ rect = $c.saved.rect; visible = [bool]$c.saved.visible; max = [bool]$c.saved.max; min = [bool]$c.saved.min } }
   if (-not $script:saved) {
     # the window rect as shown (GetWindowPlacement would give the pre-snap size of a window snapped to half the screen)
     $sr = New-Object W.U+RECT; [void][W.U]::GetWindowRect($h, [ref]$sr)
-    $script:saved = @{ rect = $sr; visible = [W.U]::IsWindowVisible($h); max = [W.U]::IsZoomed($h); min = [W.U]::IsIconic($h) }
+    $script:saved = @{ rect = @{ L = $sr.L; T = $sr.T; R = $sr.R; B = $sr.B }; visible = [W.U]::IsWindowVisible($h); max = [W.U]::IsZoomed($h); min = [W.U]::IsIconic($h) }
   }
   if (-not [W.U]::IsWindowVisible($h) -or [W.U]::IsZoomed($h) -or [W.U]::IsIconic($h)) { [void][W.U]::ShowWindow($h, 9) }
   $wr = New-Object W.U+RECT; $vr = New-Object W.U+RECT; [void][W.U]::GetWindowRect($h, [ref]$wr)
@@ -234,11 +239,12 @@ function Place($c) {
   $w = [int]$c.w; $hh = [int]$c.h
   [void][W.U]::SetWindowPos($h, [IntPtr](-1), [int]$c.x - $l, [int]$c.y - $t - $th, $w + $l + $r, $hh + $t + $th + $b, 0x40)
   Front $h
-  @{ ok = $true; th = $th }
+  @{ ok = $true; th = $th; saved = $script:saved }
 }
 # back as before: region off, not topmost, same rect / maximized / minimized, hidden again if it was
 function Restore($c) {
   $h = Hwnd; $s = $script:saved; $script:saved = $null
+  if (-not $s -and $c.saved -and $c.saved.rect) { $s = $c.saved }   # (kept by Node across a helper restart)
   if (-not $h) { return @{ ok = $false } }
   [void][W.U]::SetWindowRgn($h, [IntPtr]::Zero, $true)
   if ($s) {
@@ -247,7 +253,7 @@ function Restore($c) {
     else { [void][W.U]::SetWindowPos($h, [IntPtr](-2), $q.L, $q.T, $q.R - $q.L, $q.B - $q.T, 0x10) }
     if ($s.min) { [void][W.U]::ShowWindow($h, 6) }
     if (-not $s.visible -or $c.hide) { [void][W.U]::ShowWindow($h, 0) }
-  } else { [void][W.U]::SetWindowPos($h, [IntPtr](-2), 0, 0, 0, 0, 0x13) }
+  } else { [void][W.U]::SetWindowPos($h, [IntPtr](-2), 0, 0, 0, 0, 0x13); if ($c.hide) { [void][W.U]::ShowWindow($h, 0) } }
   @{ ok = $true }
 }
 
@@ -310,10 +316,13 @@ function Put-Back($root, $prev, $title, $h, $vis, $min, $fg0) {
 function Send-To($c) {
   $h = Hwnd; if (-not $h) { return @{ ok = $false; why = 'Claude is not running' } }
   $fg0 = [W.U]::GetForegroundWindow(); $min = [W.U]::IsIconic($h); $vis = [W.U]::IsWindowVisible($h)
+  # bg (automatic sends, 10-14): never switch pages under the user (Claude in front = in use: later) and no deep link (it raises the app)
+  if ($c.bg -and $fg0 -eq $h) { return @{ ok = $false; why = 'Claude is in use (in front); later' } }
   if ($min -or -not $vis) { [void][W.U]::ShowWindow($h, 4); [void][W.U]::SetWindowPos($h, [IntPtr]1, 0, 0, 0, 0, 0x13); Hold $fg0; Start-Sleep -Milliseconds 300 }
-  $root = Root; $prev = PageTitle $root; $out = @{ ok = $false }
+  $root = $null; $prev = ''; $out = @{ ok = $false }
   try {
-    if (-not (Open-Session $root $c.title $fg0 $c.link)) { $out.why = 'session not found'; return $out }
+    $root = Root; $prev = PageTitle $root   # (in the try: a UIA error here still puts the window back)
+    if (-not (Open-Session $root $c.title $fg0 $(if ($c.bg) { '' } else { $c.link }))) { $out.why = 'session not found'; return $out }
     if ($c.stop) {
       $b = $root.FindFirst($TS::Descendants, (Cond ([Windows.Automation.ControlType]::Button) 'Stop'))
       if (-not $b) { $out.why = 'not working'; return $out }
@@ -341,7 +350,10 @@ function Pick-Menu($root, $btn, $name) {
   $p.Expand(); $it = $null
   for ($k = 0; $k -lt 20 -and -not $it; $k++) {
     Start-Sleep -Milliseconds 60
-    $it = $root.FindAll($TS::Descendants, (Cond ([Windows.Automation.ControlType]::RadioButton) $null)) | Where-Object { $_.Current.Name -eq $name -or $_.Current.Name -like "$name *" } | Select-Object -First 1
+    $all = @($root.FindAll($TS::Descendants, (Cond ([Windows.Automation.ControlType]::RadioButton) $null)))
+    # the exact name first ("Titans" never picks "Titans University"), then one that starts with it ("Opus 4.5 (1M)")
+    $it = $all | Where-Object { $_.Current.Name -eq $name } | Select-Object -First 1
+    if (-not $it) { $it = $all | Where-Object { ([string]$_.Current.Name).StartsWith("$name ", [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1 }
   }
   if ($it) { [void](Press $it); return $true }
   try { $p.Collapse() } catch {}
@@ -351,8 +363,9 @@ function New-Session($c) {
   $h = Hwnd; if (-not $h) { return @{ ok = $false; why = 'Claude is not running' } }
   $fg0 = [W.U]::GetForegroundWindow(); $min = [W.U]::IsIconic($h); $vis = [W.U]::IsWindowVisible($h)
   if ($min -or -not $vis) { [void][W.U]::ShowWindow($h, 4); [void][W.U]::SetWindowPos($h, [IntPtr]1, 0, 0, 0, 0, 0x13); Hold $fg0; Start-Sleep -Milliseconds 300 }
-  $root = Root; $prev = PageTitle $root; $out = @{ ok = $false; title = '' }
+  $root = $null; $prev = ''; $out = @{ ok = $false; title = '' }
   try {
+    $root = Root; $prev = PageTitle $root
     $new = Find $root 'New'; if (-not $new) { $out.why = 'no New button'; return $out }
     [void](Press $new); Hold $fg0
     $ed = $null
@@ -426,8 +439,9 @@ function In-Session($c, [scriptblock]$act) {
   $h = Hwnd; if (-not $h) { return @{ ok = $false; why = 'Claude is not running' } }
   $fg0 = [W.U]::GetForegroundWindow(); $min = [W.U]::IsIconic($h); $vis = [W.U]::IsWindowVisible($h)
   if ($min -or -not $vis) { [void][W.U]::ShowWindow($h, 4); [void][W.U]::SetWindowPos($h, [IntPtr]1, 0, 0, 0, 0, 0x13); Hold $fg0; Start-Sleep -Milliseconds 300 }
-  $root = Root; $prev = PageTitle $root
+  $root = $null; $prev = ''
   try {
+    $root = Root; $prev = PageTitle $root
     if (-not (Open-Session $root $c.title $fg0 $c.link)) { return @{ ok = $false; why = 'session not found' } }
     & $act
   } finally {
@@ -712,6 +726,7 @@ function Manage($c) {
       return @{ ok = $true; title = $nm }
     }
     $m = $root.FindFirst($TS::Descendants, (Cond ([Windows.Automation.ControlType]::Button) "More options for $t")); if (-not $m) { return @{ ok = $false; why = 'no session menu' } }
+    $had = [bool](SessionRow $root $t); $cf = $false; $pg0 = PageTitle $root   # gone only counts if its row was there (a hidden sidebar shows none), the app confirmed, or its page closed
     [void](Press $m)
     $nm = switch ([string]$c.act) { 'fork' { 'Fork' } 'archive' { 'Archive' } 'delete' { 'Delete' } default { '' } }
     $it = if ($nm) { MenuItem $root $nm }
@@ -725,11 +740,11 @@ function Manage($c) {
         for ($k = 0; $k -lt 40 -and -not $ok; $k++) { Start-Sleep -Milliseconds 80; $ok = (PageTitle $root) -eq $f -or [bool](SessionRow $root $f) }
         return @{ ok = $ok; title = $f; why = $(if (-not $ok) { 'no fork showed up' } else { '' }) }
       }
-      'delete' { if (-not (Confirm $root 'Delete session?' 'Delete' 20)) { return @{ ok = $false; why = 'no delete confirm' } } }
-      'archive' { [void](Confirm $root 'Archive session?' 'Archive' 6) }
+      'delete' { if (-not (Confirm $root 'Delete session?' 'Delete' 20)) { return @{ ok = $false; why = 'no delete confirm' } }; $cf = $true }
+      'archive' { $cf = [bool](Confirm $root 'Archive session?' 'Archive' 6) }
     }
     Hold $fg0; $gone = $false
-    for ($k = 0; $k -lt 30 -and -not $gone; $k++) { Start-Sleep -Milliseconds 100; $gone = -not (SessionRow $root $t) }
+    for ($k = 0; $k -lt 30 -and -not $gone; $k++) { Start-Sleep -Milliseconds 100; $gone = (($had -or $cf) -and -not (SessionRow $root $t)) -or ($pg0 -and ($pn = PageTitle $root) -and $pn -ne $pg0) }   # (an empty title mid-load is no new page)
     @{ ok = $gone; why = $(if (-not $gone) { 'the session is still listed' } else { '' }) }
   }
 }
@@ -804,6 +819,8 @@ function Attach($c) {
     $ed = $root.FindFirst($TS::Descendants, (Cond ([Windows.Automation.ControlType]::Edit) 'Prompt')); if (-not $ed) { return @{ ok = $false; why = 'no reply box' } }
     $vp = $ed.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
     if ($vp.Current.Value.Trim()) { return @{ ok = $false; why = 'a draft is in its reply box' } }
+    foreach ($f in @($c.files)) { $f = ([string]$f).Replace('/', '\'); if (-not (Test-Path -LiteralPath $f)) { return @{ ok = $false; why = "no file $f" } } }   # before any is added
+    $n = 0
     foreach ($f in @($c.files)) {
       $f = ([string]$f).Replace('/', '\')   # the dialog calls forward slashes "not valid"
       if (-not (Test-Path -LiteralPath $f)) { return @{ ok = $false; why = "no file $f" } }
@@ -822,8 +839,8 @@ function Attach($c) {
       [void][W.U]::PostMessage($dh, 0x0111, [IntPtr]1, $open)                                                 # WM_COMMAND IDOK
       # done when the picker is gone; a message box over it (another #32770) means it refused the name
       for ($k = 0; $k -lt 40 -and [W.U]::IsWindow($dh); $k++) { Start-Sleep -Milliseconds 80; $d = [W.U]::FileDialog($h); if ($d -ne [IntPtr]::Zero -and $d -ne $dh) { break } }
-      if ([W.U]::IsWindow($dh)) { Close-Dialogs $h; return @{ ok = $false; why = "the file dialog refused $f" } }
-      Hold $fg0; Start-Sleep -Milliseconds 400
+      if ([W.U]::IsWindow($dh)) { Close-Dialogs $h; return @{ ok = $false; why = "the file dialog refused $f$(if ($n) { " ($n file(s) before it are in the app's reply box: remove them there)" })" } }
+      Hold $fg0; Start-Sleep -Milliseconds 400; $n++
     }
     Start-Sleep -Milliseconds 600   # the composer redraws once the files are in; text set before that can be lost
     $t = ([string]$c.text).Trim()
@@ -892,6 +909,13 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
       # a window just under another one (the live wallpaper under the folded sphere)
       'under' { $h = [IntPtr][int64]$c.hwnd; $a = [IntPtr][int64]$c.after; @{ ok = ([W.U]::IsWindow($h) -and [W.U]::IsWindow($a) -and [W.U]::SetWindowPos($h, $a, 0, 0, 0, 0, 0x13)) } }
       'bottom' { $h = [IntPtr][int64]$c.hwnd; @{ ok = ([W.U]::IsWindow($h) -and [W.U]::SetWindowPos($h, [IntPtr]1, 0, 0, 0, 0, 0x13)) } }
+      # Autonomy part 2: the composer's Usage button names the binding plan window ("Usage: Context ..., Weekly - all models: 86%,
+      # Resets Mon 2:00 PM"); read only, nothing is pressed
+      'usage' {
+        $root = Root; $t = $null
+        if ($root) { foreach ($e in $root.FindAll($TS::Descendants, (Cond ([Windows.Automation.ControlType]::Button) $null))) { $n = $e.Current.Name; if ($n -like 'Usage:*') { $t = $n; break } } }
+        @{ ok = [bool]$t; text = $t; why = $(if (-not $root) { 'no Claude window' } elseif (-not $t) { 'no usage button' } else { '' }) }
+      }
       'send' { Send-To $c }    # {title, text} or {title, stop:true}
       'newsession' { New-Session $c }   # {folder, model, text, worktree}
       'newprobe' { Probe-New $c }          # tests: the New session page's controls

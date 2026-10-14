@@ -1,8 +1,8 @@
 {
   "name": "session-sphere",
-  "version": "0.1.3",
+  "version": "0.1.2",
   "private": true,
-  "description": "Theseus: a desktop session sphere for your Claude Code sessions (unofficial)",
+  "description": "Theseus: a desktop overview of your Claude Code sessions (unofficial)",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
@@ -31,6 +31,9 @@
     "files": [
       "src/**",
       "assets/**",
+      "mod/**",
+      "!mod/.claude-plugin/types/**",
+      "!mod/state.json",
       "package.json",
       "!**/node_modules/three/{examples,src,editor,docs,manual}/**"
     ],

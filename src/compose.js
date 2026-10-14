@@ -19,24 +19,29 @@ function cwdOf(file) {
     const re = /"cwd":("(?:[^"\\]|\\.)*")/g, t = b.toString('utf8', 0, n); let m;
     while ((m = re.exec(t))) { try { const d = JSON.parse(m[1]); if (!seen.includes(d)) seen.push(d); } catch {} }
   } catch {}
-  const j = require('./detail').findLineSync(file, '"cwd":"'); if (j && typeof j.cwd === 'string') seen.push(j.cwd);
+  try { const j = require('./detail').findLineSync(file, '"cwd":"'); if (j && typeof j.cwd === 'string') seen.push(j.cwd); } catch {}   // (the transcript may be gone by now)
   const ok = d => { try { return !!d && path.isAbsolute(d) && fs.statSync(d).isDirectory(); } catch { return false; } };
   return seen.find(d => enc(d) === want && ok(d)) || [...seen].reverse().find(ok) || '';
 }
 
-// simple .gitignore lines (no negation) -> a test on a path relative to the root (a line ending in / names folders only)
+// simple .gitignore lines (with ! negation) -> a test on a path relative to the root (a line ending in / names folders only)
 function ignored(root) {
   let t = ''; try { t = fs.readFileSync(path.join(root, '.gitignore'), 'utf8'); } catch { return () => false; }
   const res = [];
   for (let l of t.split(/\r?\n/)) {
-    l = l.trim(); if (!l || l[0] === '#' || l[0] === '!') continue;
+    l = l.trim(); if (!l || l[0] === '#') continue;
+    const neg = l[0] === '!'; if (neg) l = l.slice(1);
     const dirOnly = /\/$/.test(l), anchored = l.replace(/\/$/, '').includes('/');
-    l = l.replace(/^\//, '').replace(/\/\*{0,2}$/, '');
+    l = l.replace(/^\//, '').replace(/\/$/, '');   // ("dist/*" keeps its /*: dist shows, its children are ignored, a "!dist/keep.js" brings one back)
     if (!l || /[\[\]]/.test(l)) continue;
-    const rx = l.split('/').map(p => p === '**' ? '.*' : p.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')).join('/');
-    res.push({ dirOnly, re: new RegExp(anchored ? `^${rx}$` : `(^|/)${rx}$`, 'i') });
+    // "**/" is any number of folders, none included ("a/**/b" covers a/b, "**/foo" a root foo); a last "**" is everything below
+    const parts = l.split('/');
+    const rx = parts.map((p, i) => { const last = i === parts.length - 1;
+      return p === '**' ? (last ? '.*' : '(?:.*/)?') : p.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]') + (last ? '' : '/'); }).join('');
+    res.push({ neg, dirOnly, re: new RegExp(anchored ? `^${rx}$` : `(^|/)${rx}$`, 'i') });
   }
-  return (rel, dir) => res.some(r => (dir || !r.dirOnly) && r.re.test(rel));
+  // the last line that matches decides (a "!" line takes a path back: "/*" then "!/src" keeps src)
+  return (rel, dir) => { let out = false; for (const r of res) if ((dir || !r.dirOnly) && r.re.test(rel)) out = !r.neg; return out; };
 }
 
 // -> [{ p: 'src/main.js', d: false }] (forward slashes, folders with d: true)

@@ -32,23 +32,29 @@ function create(opts = {}) {
     });
     return true;
   }
-  function send(cmd, ms) {
+  // a helper that is stuck (a hung SAPI call) is killed, so the next line starts a fresh one instead of queueing behind it
+  function kill() {
+    if (!ps) return;
+    const pid = ps.pid; try { ps.kill(); } catch {} ps = null;
+    if (opts.state && pid) for (const x of ['flag', 'txt']) fs.unlink(path.join(opts.state, `speaking_${pid}.${x}`), () => {});
+    fail();
+  }
+  function send(cmd, ms, killOnTimeout) {
     if (!start()) return Promise.resolve({ ok: false, why: 'no voice helper' });
     const n = ++id;
     return new Promise(res => {
-      const t = setTimeout(() => { if (wait.delete(n)) res({ ok: false, why: 'timeout' }); }, ms);
+      // only the oldest line waiting can be the stuck one: a line queued behind long ones has not started playing yet
+      const t = setTimeout(() => { const oldest = n === Math.min(...wait.keys()); if (wait.delete(n)) { res({ ok: false, why: 'timeout' }); if (killOnTimeout && oldest) kill(); } }, ms);
       wait.set(n, r => { clearTimeout(t); res(r); });
       try { ps.stdin.write(JSON.stringify({ id: n, ...cmd }) + '\n'); } catch { wait.delete(n); clearTimeout(t); res({ ok: false, why: 'write failed' }); }
     });
   }
   return {
     // speed 0.6..1.6 (the Speed setting) -> SAPI rate -10..10
-    say: (text, o = {}) => send({ cmd: 'say', text: String(text || '').slice(0, 2000), rate: Math.round(((Number(o.speed) || 1) - 1) * 10), voice: o.voice || '' }, 120000),
+    say: (text, o = {}) => send({ cmd: 'say', text: String(text || '').slice(0, 2000), rate: Math.round(((Number(o.speed) || 1) - 1) * 10), voice: o.voice || '' }, 120000, true),
     voices: () => send({ cmd: 'voices' }, 15000).then(r => (r && r.voices) || []),
     dispose() {   // killed mid-line its finally never runs: its talking flag files go here
-      disposed = true;
-      if (ps) { const pid = ps.pid; try { ps.kill(); } catch {} ps = null; if (opts.state && pid) for (const x of ['flag', 'txt']) fs.unlink(path.join(opts.state, `speaking_${pid}.${x}`), () => {}); }
-      fail();
+      disposed = true; kill(); fail();
     },
   };
 }

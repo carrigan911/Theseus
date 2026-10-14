@@ -1,11 +1,17 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('sphere', {
   hit: over => ipcRenderer.send('hit', over),
+  beat: () => ipcRenderer.send('beat'),                              // renderer heartbeat: main reloads a blank or hung page
   cursor: () => ipcRenderer.invoke('cursor'),
   covered: () => ipcRenderer.invoke('covered'),
   front: on => ipcRenderer.send('front', on),
   sphereArea: a => ipcRenderer.send('sphere-area', a),               // { x, y, r }: the folded sphere's circle in window DIPs
   onOccluded: cb => ipcRenderer.on('occluded', (_e, on) => cb(on)),  // true while apps cover the folded sphere
+  onIntro: cb => ipcRenderer.on('intro', (_e, m) => cb(m)),          // { dir: 'in' | 'out', kind, side }: a start / close animation
+  introDone: dir => ipcRenderer.send('intro-done', dir),
+  introFirst: () => ipcRenderer.invoke('intro-first'),
+  perfOn: () => ipcRenderer.invoke('perf-on'), perf: s => ipcRenderer.send('perf', s),   // performance tests (SPHERE_PERF)
+  playFx: (dir, kind) => ipcRenderer.invoke('play-fx', dir, kind),   // Settings' Play: a start or close animation on the sphere               // the first start animation, once the window shows
   update: () => ipcRenderer.invoke('update-state'),                  // UpdateButton_Spec: { kind: 'none'|'dev'|'release', version, notes, current, dev, waiting }
   onUpdate: cb => ipcRenderer.on('update', (_e, s) => cb(s)),
   updateInstall: () => ipcRenderer.invoke('update-install'),
@@ -66,6 +72,8 @@ contextBridge.exposeInMainWorld('sphere', {
   maskClick: () => ipcRenderer.send('mask-click'),
   onFeed: cb => ipcRenderer.on('feed', (_e, f) => cb(f)),
   onTalking: cb => ipcRenderer.on('talking', (_e, on) => cb(on)),
+  onDigest: cb => ipcRenderer.on('digest', (_e, d) => cb(d)),                     // the digest card (end of Night mode, "what happened", Settings)
+  onBacklog: cb => ipcRenderer.on('backlog-open', () => cb()),                    // Settings' "Open the backlog"
   onKeys: cb => ipcRenderer.on('keys', () => cb()),                              // Win+Alt+Space
   keyFocus: on => ipcRenderer.send('key-focus', !!on),
   // Theseus tools: audio, recorder, readout, strip
@@ -73,8 +81,12 @@ contextBridge.exposeInMainWorld('sphere', {
   onTools: cb => ipcRenderer.on('tools', (_e, t) => cb(t)),
   act: (name, arg) => ipcRenderer.invoke('tools-act', name, arg),                // nextOut, nextMic, muteMic, setVolume, recToggle, saveReplay, screenshot ...
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
+  openNewProject: () => ipcRenderer.send('open-new-project'),
+  projectPick: () => ipcRenderer.invoke('project-pick'),
+  projectCreate: (name, folder, resume) => ipcRenderer.invoke('project-create', name, folder, !!resume),
   mcpRegister: on => ipcRenderer.invoke('mcp-register', on),                    // the sphere's tools in Claude Code: true / false / undefined (ask) -> { ok, on, why }
-  askToken: t => ipcRenderer.invoke('ask-token', t),                              // Voice Ask sign-in token: set (string, '' clears) / read (undefined) -> is one saved
+  echo: a => ipcRenderer.invoke('echo', a),                                         // Echo: { cmd: status / token / test / funnel / replace }
+  askToken: t => ipcRenderer.invoke('ask-token', t),                             // Voice Ask sign-in token: set (string, '' clears) / read (undefined) -> is one saved
   askTest: () => ipcRenderer.invoke('ask-test'),                                  // -> { ok, ms, text } or { ok: false, why }
   onVoiceOpen: cb => ipcRenderer.on('voice-open', (_e, a) => cb(a)),
   onVoiceCard: cb => ipcRenderer.on('voice-card', (_e, a) => cb(a)),           // { op: type / send / clear / close / next / prev / scroll / claude, text }           // { sessionId } (null: the New session form)
@@ -82,7 +94,8 @@ contextBridge.exposeInMainWorld('sphere', {
   onAsk: cb => ipcRenderer.on('ask', (_e, a) => cb(a)),                         // { state: thinking / answer / error, q, text }
   onNotice: cb => ipcRenderer.on('notice', (_e, text, ms) => cb(text, ms)),
   onLevels: cb => ipcRenderer.on('levels', (_e, l) => cb(l)),                    // strip meters: { mic, sys } 0..1 (null = not recorded), while recording
-  onBg: cb => ipcRenderer.on('bg', (_e, s) => cb(s)),   // the background window: { style, opacity, visible, tint, speed, paused }
+  onBg: cb => ipcRenderer.on('bg', (_e, s) => cb(s)),
+  onFx: cb => ipcRenderer.on('fx', (_e, m) => cb(m)),   // the background window: Lightfall's squeeze and shake { dir, beamX } or null   // the background window: { style, opacity, visible, tint, speed, paused }
   onToast: cb => ipcRenderer.on('toast', (_e, p) => cb(p)),
   stripSize: (w, h) => ipcRenderer.send('strip-size', w, h),
   stripHit: over => ipcRenderer.send('strip-hit', over),

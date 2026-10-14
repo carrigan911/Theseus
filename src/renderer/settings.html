@@ -13,6 +13,11 @@
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 600; margin: 8px 0 2px; }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); }
   h2 + .row { border-top: 0; }
+  /* folding panels (AudioCard_Spec): a click on a heading hides its rows up to the next heading */
+  h2 { cursor: pointer; user-select: none; }
+  h2::before { content: '▾'; display: inline-block; width: 12px; transition: transform .15s; }
+  h2.folded::before { transform: rotate(-90deg); }
+  .foldhide { display: none !important; }
   .row label { flex: 1; }
   .row small { display: block; color: var(--dim); font-size: 12px; }
   select, input[type=number], input[type=password], input[type=text], input[type=time] { background: #262624; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 130px; }
@@ -29,6 +34,7 @@
   .cyc:empty::after { content: "No devices listed"; color: var(--dim); font-size: 12px; }
   small.path { word-break: break-all; }
   .tf { flex: 1; display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  .tf.srl { flex-direction: column; }
   .row .tf label { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-size: 13px; }
   button:disabled { opacity: .4; cursor: default; }
   #bgThumbs { display: flex; gap: 6px; width: 100%; }
@@ -45,12 +51,15 @@
   #wearThumbs button.on, #swapThumbs button.on { border-color: var(--accent); color: var(--text); }
   #wearThumbs img, #swapThumbs img { display: block; width: 100%; aspect-ratio: 150 / 130; object-fit: contain; }
   #tilePrev { width: 100%; height: 190px; }
+  #fxPrevBox { position: relative; width: 100%; height: 230px; }
+  #fxPrev { width: 100%; height: 100%; }
+  #fxPrevName { position: absolute; left: 10px; top: 8px; font-size: 12px; opacity: .75; pointer-events: none; }
   button.rec.on { background: #c0392b; }
   .val { color: var(--dim); font-size: 12px; min-width: 34px; text-align: right; }
   /* card mode: shown over the sphere's panel like the chat card */
   html.card { background: transparent; height: 100%; overflow: hidden; }   /* body scrolls inside its rounded border */
   html.card body { height: 100vh; overflow: auto; border: 1px solid var(--line); border-radius: 14px; scrollbar-width: thin; scrollbar-color: #3d3c38 transparent; }
-  input.pth { width: 230px; } .ast.on { color: #7fc77f; } .ast.miss { color: #d9a35b; } .addoff { display: none !important; }
+  input.pth { width: 230px; } input.refused { outline: 2px solid #d96b5b; } .ast.on { color: #7fc77f; } .ast.miss { color: #d9a35b; } .addoff { display: none !important; }
   .warn { color: #d9a35b; }
 </style>
 </head>
@@ -65,7 +74,7 @@
   <pre id="updText" hidden style="white-space:pre-wrap;margin:0 0 8px;color:var(--dim);font:12px/1.4 inherit"></pre>
 </section>
 
-<!-- data-card: which bar card shows the section (General = centre button, Theseus = right); the plain window shows all -->
+<!-- data-card: which bar card shows the section (Session Management, General, Audio, Theseus: the bar buttons); the plain window shows all -->
 <section data-card="general">
   <h2>Display</h2>
   <div class="row"><label>Sphere size<small>How big the sphere is on the screen</small></label>
@@ -91,12 +100,10 @@
   <div class="row"><label>Rotation<small>Minutes per turn of the sphere (0 = still)</small></label><input type="number" min="0" max="30" step="0.5" data-k="spinMinutes" data-num></div>
 </section>
 
-
 <section data-card="general">
   <h2>Behaviour</h2>
   <div class="row"><label>Return to sphere<small>The tile screen folds back to the sphere after the delay below</small></label><input type="checkbox" data-k="autoFold"></div>
   <div class="row"><label>Keep cards open<small>An open chat, page or menu stays until you close it</small></label><input type="checkbox" data-k="keepCardsOpen"></div>
-  <div class="row"><label>Keep the Claude app in the tray<small>Work with sessions from the sphere (click a tile); Shift+click or Open in Claude shows the app</small></label><input type="checkbox" data-k="claudeTray"></div>
   <div class="row"><label>Show working / waiting<small>Working tiles pulse in the core colour, tiles waiting on your answer pulse yellow, idle ones dim a little</small></label><input type="checkbox" data-k="tileActivity"></div>
   <div class="row"><label>Context ring<small>A ring on each tile's rim fills with its context use up to the swap line: core colour, amber from 75 %, red from 90 %</small></label><input type="checkbox" data-k="contextRing"></div>
   <div class="row"><label>Speech caption<small>What the voice is saying shows under the sphere, fading a few seconds after it ends</small></label><input type="checkbox" data-k="speechCaption"></div>
@@ -106,7 +113,7 @@
   <div class="row" id="editorCmdRow"><label>Editor command<small>{file} and {line} are filled in; the program by its full path, e.g. "C:\Program Files\Notepad++\notepad++.exe" -n{line} "{file}"</small></label><input type="text" data-k="editorCmd" spellcheck="false" placeholder="program -arg {line} &quot;{file}&quot;"></div>
 </section>
 
-<section data-card="general" id="audioSec">
+<section data-card="audio" id="audioSec">
   <h2>Audio</h2>
   <div class="row"><label>Output<small id="outName">-</small></label><button id="outNext">Next</button></div>
   <div class="row"><label>Output volume</label><input type="range" min="0" max="100" step="1" id="outVol"><span class="val" id="outVolV"></span></div>
@@ -143,8 +150,6 @@
   <h2>System</h2>
   <div class="row"><label>Assistant name<small>Window titles, the tray, spoken lines and the wake word</small></label><input type="text" data-k="name" maxlength="31" spellcheck="false"></div>
   <div class="row"><label>Recording names<small>Recordings and screenshots are named &lt;this&gt;_&lt;date&gt;; blank = the assistant's name</small></label><input type="text" data-k="recPrefix" maxlength="30" spellcheck="false"></div>
-  <div class="row"><label>App control<small>Reply, answer, start and rename sessions from the sphere: it presses buttons in the Claude app for you</small></label><input type="checkbox" class="appctl"></div>
-  <div class="row appnote" style="display:none"><label><small class="warn">App control presses buttons in the Claude app for you, like a person would. Anthropic's terms restrict automated access to its services, so use it at your own risk. It can stop working when the Claude app updates.</small></label><span><button class="appyes">Turn on</button> <button class="appno">Cancel</button></span></div>
   <div class="row"><label>Setup<small>The first-run card: name, recordings folder, tools found, App control</small></label><button id="setupOpen">Open…</button></div>
   <div class="row"><label>Start with Windows</label><input type="checkbox" data-k="autostart"></div>
   <div class="row"><label><span class="nm">Theseus</span> strip<small>A slim bar at the top of the screen: mode, audio, recording. Drag it to move it</small></label><input type="checkbox" data-k="strip"></div>
@@ -154,9 +159,112 @@
   <div class="row"><label>Global hotkeys<small id="keyNote">Ctrl+Alt+F11 output · F7 microphone · F8 mute · S readout · Win+Alt+Space sphere keys (arrows, Enter, Esc)</small></label><input type="checkbox" data-k="hotkeys"></div>
 </section>
 
+<section data-card="sessions" id="sessGeneral">
+  <h2>Sessions</h2>
+  <div class="row"><label>App control<small>Reply, answer, start and rename sessions from the sphere: it presses buttons in the Claude app for you</small></label><input type="checkbox" class="appctl"></div>
+  <div class="row appnote" style="display:none"><label><small class="warn">App control presses buttons in the Claude app for you, like a person would. Anthropic's terms restrict automated access to its services, so use it at your own risk. It can stop working when the Claude app updates.</small></label><span><button class="appyes">Turn on</button> <button class="appno">Cancel</button></span></div>
+  <div class="row"><label>Keep the Claude app in the tray<small>Work with sessions from the sphere (click a tile); Shift+click or Open in Claude shows the app</small></label><input type="checkbox" data-k="claudeTray"></div>
+</section>
+
+<section data-addon="modes" id="theseus" data-card="sessions">
+  <h2>Mode</h2>
+  <div class="row"><label>Mode<small id="modeNote"><span class="nm">Theseus</span> switches when it next checks in</small></label>
+    <select id="modeSel"><option value="normal">Normal</option><option value="worker">Worker</option><option value="night">Night</option><option value="weekend">Weekend</option><option value="performance">Max perf</option><option value="efficiency">Max efficiency</option></select></div>
+</section>
+
+<section data-card="sessions" id="focus">
+  <h2>Focus</h2>
+  <div class="row"><label>Focus<small id="focusNote">While on, sessions send only clear-swaps and blockers (questions and picture updates in Worker mode only), and <span class="nm">Theseus</span> sends only swaps. Worker, Night and Weekend turn it on</small></label>
+    <span><select id="focusFor"><option value="1800000">30 min</option><option value="3600000">1 h</option><option value="7200000">2 h</option><option value="at">Until</option><option value="">Until off</option></select>
+    <input type="time" id="focusAt" style="display:none"> <button id="focusOn">On</button> <button id="focusOff">Off</button></span></div>
+</section>
+
+<section data-card="sessions" id="sessTools">
+  <h2>Session tools</h2>
+  <div class="row"><label>Theseus tools in your sessions<small id="mcpNote">Adds Theseus to Claude Code, so your sessions can speak to you, show a caption, mark their tile as needing you, and read or search other sessions. New sessions get it</small></label><button id="mcpOn">Add</button> <button id="mcpOff">Remove</button></div>
+  <div class="row"><label>Sessions may use the tools<small>Off: the sphere refuses their calls</small></label><input type="checkbox" data-k="sessionTools"></div>
+  <div class="row"><label>Sessions may speak<small>Off: what they say shows as a caption only</small></label><input type="checkbox" data-k="sessionSpeak"></div>
+  <div class="row"><label>Theseus messaging between sessions<small>Lets a session message another session through Theseus (shown as "[From title]"). Needs App control. Rarely used: the Session manager and its workers message through the Claude app instead, so turning this off does not affect them, and it does not stop the Claude app's own messaging</small></label><input type="checkbox" data-k="sessionsMessage"></div>
+  <div class="row" data-addon="whisper"><label>Web lookups<small>Search the web when a question needs current facts (news, prices, weather)</small></label><input type="checkbox" data-k="askWeb"></div>
+</section>
+
+<section data-card="sessions" id="sessProjects">
+  <h2>Projects</h2>
+  <div class="row"><label>New project<small>Creates a project manager (config entry, checkpoint, manager session) and groups the project's sessions together. By voice: "create a new project called Name". Needs App control</small></label><button id="newProj">New project…</button></div>
+  <div class="row"><label>Corner for the New session and New project tiles<small>Where they sit in the tile view, apart from the session tiles</small></label>
+    <select data-k="actionCorner"><option value="top-left">Top left</option><option value="top-right">Top right</option><option value="bottom-left">Bottom left</option><option value="bottom-right">Bottom right</option></select></div>
+  <div class="row"><label>Show the New session and New project tiles<small>Off: no action tiles in the tile view or on the sphere (voice and the button above still work)</small></label><input type="checkbox" data-k="actionTiles"></div>
+</section>
+
+<section data-card="sessions" id="sessAlerts">
+  <h2>Spoken alerts</h2>
+  <div class="row"><label>A session finished<small>It worked for 20 s or more and has stopped. Not for the card you have open</small></label><input type="checkbox" data-k="alertFinished"></div>
+  <div class="row"><label>A session needs you<small>It asks a question, wants its plan approved, or ends with a question</small></label><input type="checkbox" data-k="alertWaiting"></div>
+  <div class="row"><label>A session asks permission<small>A tool call waits on Allow or Deny. Alerts are spoken even with voice commands off; Speak answers off makes them captions only</small></label><input type="checkbox" data-k="alertPermission"></div>
+  <div class="row"><label>Land review failed<small>A land review report ends in FAIL: the card goes on the tile of the session in that branch&#39;s worktree (else the manager&#39;s)</small></label><input type="checkbox" data-k="alertReview"></div>
+  <div class="row"><label>Swaps<small><span class="nm">Theseus</span> says when a session is about to swap, has swapped, or needs a hand. Off: captions only</small></label><input type="checkbox" data-k="manageSpeak"></div>
+  <div class="row" data-addon="whisper"><label><small>Sessions by voice: "tell &lt;session&gt; …" (read back, sent after 3 s unless you say cancel), "what did &lt;session&gt; say", "stop &lt;session&gt;" (say yes)</small></label></div>
+</section>
+<section data-card="sessions" id="manageSec">
+  <h2>Session management</h2>
+  <div class="row"><label>Manage sessions<small><span class="nm">Theseus</span> swaps sessions at their swap line, keeps the mode on a schedule, and parks and resumes sessions. Off: it only shows them</small></label><input type="checkbox" data-k="manageOn"></div>
+  <div class="row mgr" id="mgrWarn" style="display:none"><label><small id="mgrWarnText"></small></label><button id="mgrOutsideOk" style="display:none">Manage anyway</button></div>
+  <div class="row mgr"><label>Swaps<small>At the swap line a session updates its checkpoint and commits, then continues fresh from it. 30 s to say cancel, or right-click its tile: Queue, Don&#39;t swap</small></label><input type="checkbox" data-k="manageSwaps"></div>
+  <div class="row mgr"><label>Quiet swaps<small>Swaps run on their own with no card on the tile; a card shows only when a swap needs you (unsent text in its reply box, a failed swap). Off: the 30 s countdown card with Swap now and Cancel</small></label><input type="checkbox" data-k="swapQuiet"></div>
+  <div class="row mgr"><label>Swap method<small>Clear: the session clears itself and Theseus re-prompts it (same title, group, model; one typed message). New session: a fresh session starts and the old one is archived (needs the app&#39;s buttons). Clear falls back to New session when it fails twice</small></label><select data-k="swapMethod"><option value="clear">Clear (default)</option><option value="new">New session</option></select></div>
+  <div class="row"><label>Land reviews folder<small>Reports\LandReview of the repo land.ps1 runs in; a FAIL puts a card on the tile. Blank = off</small></label><input type="text" class="pth" data-k="reviewsDir" spellcheck="false"></div>
+  <div class="row mgr"><label>Age limit<small>Minutes a session may run before a swap (0 = no limit)</small></label><input type="number" min="0" max="1440" step="10" data-k="swapAgeMin" data-num></div>
+  <div class="row mgr"><label>Modes and schedule<small><span class="nm">Theseus</span> keeps the mode itself; Night and Weekend start and end on their own</small></label><input type="checkbox" data-k="manageModes"></div>
+  <div class="row mgr"><label>Night<small>From / to, every day</small></label><span class="mrow"><input type="checkbox" data-k="nightOn"><input type="time" data-k="nightFrom"><input type="time" data-k="nightTo"></span></div>
+  <div class="row mgr"><label>Weekend<small>From Friday / to Monday</small></label><span class="mrow"><input type="checkbox" data-k="weekendOn"><input type="time" data-k="weekendFrom"><input type="time" data-k="weekendTo"></span></div>
+  <div class="row mgr"><label>Parking and queue<small>Parked sessions wait in the queue and resume, in order, while fewer than the mode's cap are working</small></label><input type="checkbox" data-k="manageQueue"></div>
+  <div class="row mgr"><label>Queue at night<small>Off: Night and Weekend start nothing new from the queue</small></label><input type="checkbox" data-k="queueAtNight"></div>
+  <div class="row mgr"><label>Running caps<small>Normal, Worker, Night, Weekend, Max perf, Max efficiency</small></label><span class="mrow" id="capRow"><input type="number" min="0" max="20" data-cap="normal" title="Normal"><input type="number" min="0" max="20" data-cap="worker" title="Worker"><input type="number" min="0" max="20" data-cap="night" title="Night"><input type="number" min="0" max="20" data-cap="weekend" title="Weekend"><input type="number" min="0" max="20" data-cap="performance" title="Max perf"><input type="number" min="0" max="20" data-cap="efficiency" title="Max efficiency"></span></div>
+  <div class="row mgr"><label>Stall recovery<small>A session that stopped on an API error, keeps hitting the same error, or went quiet after <span class="nm">Theseus</span> asked it to carry on gets a nudge. After 2 in an hour it is marked stuck and you hear about it</small></label><input type="checkbox" data-k="autoStall"></div>
+  <div class="row mgr"><label>Done check<small>When a session says it is done, <span class="nm">Theseus</span> checks its work is committed and its checkpoint is up to date. If not it asks once; if so the tile shows green</small></label><input type="checkbox" data-k="autoDone"></div>
+  <div class="row mgr"><label>Quiet time<small>Minutes before a quiet session gets a nudge</small></label><input type="number" min="1" max="120" step="1" data-k="autoQuietMin" data-num></div>
+  <div class="row mgr"><label>Usage pacing<small>Reads the Claude app's usage (5-hour or weekly). Near the 5-hour limit one session fewer runs; the weekly use follows a line to the target at the reset (over it: one fewer, well under it: one more)</small></label><input type="checkbox" data-k="autoPace"></div>
+  <div class="row mgr"><label>5-hour warning<small>Percent of the 5-hour window where one session fewer runs</small></label><input type="number" min="50" max="99" step="1" data-k="autoWarnPct" data-num></div>
+  <div class="row mgr"><label>Weekly target<small>Percent of the weekly allowance to reach by the reset</small></label><input type="number" min="50" max="100" step="1" data-k="autoWeekTarget" data-num></div>
+  <div class="row mgr"><label>Park at the limit<small>At the limit (or a rate-limit error) working sessions are parked until the reset; the queue then resumes them</small></label><input type="checkbox" data-k="autoParkAtLimit"></div>
+  <div class="row mgr"><label>Task backlog<small>Tasks wait in order and start as new sessions, one at a time, while there is room under the cap (night-only ones in Night or Weekend). Add them in the backlog or tell <span class="nm">Theseus</span> "later: in &lt;project&gt;, &lt;task&gt;"</small></label><input type="checkbox" data-k="autoBacklog"></div>
+  <div class="row mgr"><label>Away alerts and digest<small>After 10 minutes away, a session that waits on you or is stuck is kept as an alert (for the phone app). When Night mode ends, a digest of the night (commits, swaps, backlog, stalls, limits, what waits) shows and is spoken. Ask "what happened" any time</small></label><input type="checkbox" data-k="autoDigest"></div>
+  <div class="row mgr"><label>Digest<small>What happened in the last 12 hours</small></label><button id="digOpen">Show the digest</button></div>
+  <div class="row mgr"><label>Backlog<small>The tasks, their order, and a form to add one</small></label><button id="blogOpen">Open the backlog</button></div>
+</section>
+
+<section data-card="sessions" id="ctxSec">   <!-- ContextLimits_Spec -->
+  <h2>Context limits</h2>
+  <div class="row mgr"><label><small>Per kind: the swap line (context tokens where <span class="nm">Theseus</span> swaps the session) and the auto-compact window (written by Install; a session takes it when it starts; 0 = leave it)</small></label></div>
+  <div class="row mgr"><label>Session Manager<small>The feed's Session Manager session</small></label><span class="mrow"><input type="number" min="50000" max="1000000" step="10000" data-cl="swapLines.manager" title="Swap line"><input type="number" min="0" max="1000000" step="10000" data-cl="compactWindows.manager" title="Auto-compact window"></span></div>
+  <div class="row mgr"><label>Worker sessions<small>Every other session the manager feed lists</small></label><span class="mrow"><input type="number" min="50000" max="1000000" step="10000" data-cl="swapLines.worker" title="Swap line"><input type="number" min="0" max="1000000" step="10000" data-cl="compactWindows.worker" title="Auto-compact window"></span></div>
+  <div class="row mgr"><label>Other sessions<small>Sessions not in the feed (all of them without one)</small></label><span class="mrow"><input type="number" min="50000" max="1000000" step="10000" data-cl="swapLines.other" title="Swap line"><input type="number" min="0" max="1000000" step="10000" data-cl="compactWindows.other" title="Auto-compact window"></span></div>
+  <div class="row mgr"><label>Compact windows<small id="ctxState"></small></label><button id="ctxIn">Install</button></div>
+</section>
+
+<section data-card="sessions" id="advSec">
+  <h2 data-fold="1">Advanced</h2>
+  <div class="row"><label>Session files<small>Claude Code's transcripts; blank = ~/.claude/projects</small></label><input type="text" class="pth" data-k="transcriptsRoot" spellcheck="false"></div>
+  <div class="row"><label>Recent sessions<small>Without a manager feed: sessions changed within this many days</small></label><input type="number" min="1" max="60" step="1" data-k="readerDays" data-num></div>
+  <div class="row mgr"><label>Mode messages<small>Sent to the active sessions on entering a mode (blank = none)</small></label></div>
+  <div class="row mgr mmsg"><label>Normal</label><input type="text" maxlength="400" data-mm="normal" spellcheck="false"></div>
+  <div class="row mgr mmsg"><label>Worker</label><input type="text" maxlength="400" data-mm="worker" spellcheck="false"></div>
+  <div class="row mgr mmsg"><label>Night</label><input type="text" maxlength="400" data-mm="night" spellcheck="false"></div>
+  <div class="row mgr mmsg"><label>Weekend</label><input type="text" maxlength="400" data-mm="weekend" spellcheck="false"></div>
+  <div class="row mgr mmsg"><label>Max perf</label><input type="text" maxlength="400" data-mm="performance" spellcheck="false"></div>
+  <div class="row mgr mmsg"><label>Max efficiency</label><input type="text" maxlength="400" data-mm="efficiency" spellcheck="false"></div>
+  <div class="row mgr"><label>Working rules<small id="rulesState"></small></label><span class="mrow"><button id="rulesPrev">Preview</button><button id="rulesIn">Install</button><button id="rulesOut">Remove</button></span></div>
+  <div class="row mgr" id="rulesPreRow" style="display:none"><pre id="rulesPre"></pre></div>
+  <div class="row mgr"><label>Session rules<small id="srState"></small></label><span class="mrow"><button id="srPrev">Preview</button><button id="srIn">Install</button><button id="srOut">Remove</button></span></div>
+  <div class="row mgr" id="srPreRow" style="display:none"><pre id="srPre"></pre></div>
+  <div class="row mgr"><div class="tf srl"><label><input type="checkbox" data-tf="sessionRules:staging">Stage only your own files: no git add -A / . or commit -a</label><label><input type="checkbox" data-tf="sessionRules:encoding">PowerShell 5.1 file writes need -Encoding utf8</label><label><input type="checkbox" data-tf="sessionRules:waits">No long foreground waits or sleeps: run long jobs in the background</label><label><input type="checkbox" data-tf="sessionRules:stateFiles">Theseus's own files are written only by Theseus</label><label><input type="checkbox" data-tf="sessionRules:searchAgents">No general-purpose or Explore subagents for searching</label><label><input type="checkbox" data-tf="sessionRules:msgSize">Messages to other sessions: at most 12 lines or 2000 characters</label><label><input type="checkbox" data-tf="sessionRules:msgVia">Messages to other sessions go through Theseus</label><label><input type="checkbox" data-tf="sessionRules:recFirst">Pop-ups put the recommended option first</label><label><input type="checkbox" data-tf="sessionRules:noSchedMode">Scheduled jobs never start a mode</label><label><input type="checkbox" data-tf="sessionRules:modeSkills">Mode changes go through Theseus, not mode skills</label><label><input type="checkbox" data-tf="sessionRules:modeGate">Worker holds notifications; Night and Weekend hold pop-ups in quiet hours</label><label><input type="checkbox" data-tf="sessionRules:ckptNotes">Checkpoint notes: ## Now missing or over 6 lines, file too big</label><label><input type="checkbox" data-tf="sessionRules:compactNow">After a compaction, the checkpoint's ## Now block is given back</label><label><input type="checkbox" data-tf="sessionRules:precompactCommit">Before a compaction, changed checkpoints are committed</label><label><input type="checkbox" data-tf="sessionRules:bigOutput">A note when a tool returns a very large output</label><label><input type="checkbox" data-tf="sessionRules:emptyTurn">No empty reply at the end of a turn</label><label><input type="checkbox" data-tf="sessionRules:clock12">Times in replies on a 12-hour clock</label></div></div>
+  <div class="row mgr"><label>Log<small>What session management did, newest last</small></label><button id="mgrLogBtn">Show log</button></div>
+  <div class="row mgr" id="mgrLogRow" style="display:none"><pre id="mgrLog"></pre></div>
+</section>
+
 <section data-card="setup" id="setup">
   <h2>Welcome</h2>
-  <div class="row"><label>Theseus shows your Claude Code sessions as a sphere on the desktop. A few choices; all of them can be changed later in General settings.</label></div>
+  <div class="row"><label>Theseus shows your Claude Code sessions as a sphere on the desktop. A few choices; all of them can be changed later in Settings.</label></div>
   <div class="row"><label>Assistant name<small>The voice's name and wake word; one or two plain words</small></label><input type="text" data-k="name" maxlength="31" spellcheck="false"></div>
   <div class="row"><label>Recordings folder<small id="setupRec" class="path"></small></label><button id="setupRecBtn">Browse…</button></div>
   <div class="row"><label>Found on this PC<small id="setupFound">Looking…</small></label></div>
@@ -181,15 +289,7 @@
   <div class="row"><label>Whisper Python<small>The python.exe with Whisper installed (for voice questions)</small></label><input type="text" class="pth" data-k="whisperPy" spellcheck="false"></div>
   </div>
   <h2>Paths</h2>
-  <div class="row"><label>Session files<small>Claude Code's transcripts; blank = ~/.claude/projects</small></label><input type="text" class="pth" data-k="transcriptsRoot" spellcheck="false"></div>
-  <div class="row"><label>Recent sessions<small>Without a manager feed: sessions changed within this many days</small></label><input type="number" min="1" max="60" step="1" data-k="readerDays" data-num></div>
   <div class="row"><label>ffmpeg<small>For recording; blank = found on the PATH</small></label><input type="text" class="pth" data-k="ffmpeg" spellcheck="false"></div>
-</section>
-
-<section data-addon="modes" id="theseus" data-card="theseus">
-  <h2><span class="nm">Theseus</span> (Session manager)</h2>
-  <div class="row"><label>Mode<small id="modeNote"><span class="nm">Theseus</span> switches when it next checks in</small></label>
-    <select id="modeSel"><option value="normal">Normal</option><option value="worker">Worker</option><option value="night">Night</option><option value="weekend">Weekend</option><option value="performance">Max perf</option><option value="efficiency">Max efficiency</option></select></div>
 </section>
 
 <section data-card="theseus">
@@ -198,6 +298,10 @@
   <div class="row" data-addon="modes"><label>Core follows mode<small>The core takes the colour of <span class="nm">Theseus</span>'s current mode</small></label><input type="checkbox" data-k="coreFollowsMode"></div>
   <div class="row"><label>Idle brightness</label><input type="range" min="0" max="1" step="0.05" data-k="idleGlow" data-num><span class="val"></span></div>
   <div class="row"><label>Glow while speaking<small>Core lights up while <span class="nm">Theseus</span> talks</small></label><input type="checkbox" data-k="glowOnSpeech"></div>
+  <div class="row"><label>Start animation<small>How the sphere arrives when <span class="nm">Theseus</span> starts or is shown from the tray. A click on the sphere skips it</small></label><select data-k="startFx" id="startFx"><option value="random">Random</option><option value="worm">Wormhole</option><option value="bh">Black hole</option><option value="tp">Teleport</option><option value="fly">Fly in</option><option value="ftl">FTL jump</option><option value="beam">Beam-in</option><option value="fall">Lightfall</option><option value="off">Off</option></select><button type="button" id="playStart">Play</button></div>
+  <div class="row"><label>Close animation<small>How the sphere leaves when you quit or hide it from the tray</small></label><select data-k="closeFx" id="closeFx"><option value="random">Random</option><option value="worm">Wormhole</option><option value="bh">Black hole</option><option value="tp">Teleport</option><option value="fly">Fly out</option><option value="ftl">FTL jump</option><option value="beam">Beam-out</option><option value="fall">Lightfall</option><option value="off">Off</option></select><button type="button" id="playClose">Play</button></div>
+  <div class="row"><label>Animated start/close preview<small>A small sphere here plays the chosen start, then the chosen close, on a loop; Play replays one. Off: nothing is drawn</small></label><input type="checkbox" data-k="fxPreview"></div>
+  <div class="row" id="fxPrevRow" style="display:none"><div id="fxPrevBox"><div id="fxPrev"></div><span id="fxPrevName"></span></div></div>
 </section>
 
 <section data-card="theseus">
@@ -237,35 +341,8 @@
   <div class="row"><label>Max perf spikes<small>Peaks and bursts on the core (0 = none)</small></label><input type="range" min="0" max="1" step="0.05" data-k="spikeStrength" data-num><span class="val"></span></div>
 </section>
 
-<section data-card="theseus" id="manageSec">
-  <h2>Session management</h2>
-  <div class="row"><label>Manage sessions<small><span class="nm">Theseus</span> swaps sessions at their swap line, keeps the mode on a schedule, and parks and resumes sessions. Off: it only shows them</small></label><input type="checkbox" data-k="manageOn"></div>
-  <div class="row mgr" id="mgrWarn" style="display:none"><label><small id="mgrWarnText"></small></label><button id="mgrOutsideOk" style="display:none">Manage anyway</button></div>
-  <div class="row mgr"><label>Swaps<small>At the swap line a session updates its checkpoint and commits, then continues fresh from it. 30 s to say cancel, or right-click its tile: Queue, Don&#39;t swap</small></label><input type="checkbox" data-k="manageSwaps"></div>
-  <div class="row mgr"><label>Swap method<small>Clear: the session clears itself and Theseus re-prompts it (same title, group, model; one typed message). New session: a fresh session starts and the old one is archived (needs the app&#39;s buttons). Clear falls back to New session when it fails twice</small></label><select data-k="swapMethod"><option value="clear">Clear (default)</option><option value="new">New session</option></select></div>
-  <div class="row mgr"><label>Swap line<small>Context tokens</small></label><input type="number" min="50000" max="1000000" step="10000" data-k="swapTokens" data-num></div>
-  <div class="row mgr"><label>Age limit<small>Minutes a session may run before a swap (0 = no limit)</small></label><input type="number" min="0" max="1440" step="10" data-k="swapAgeMin" data-num></div>
-  <div class="row mgr"><label>Modes and schedule<small><span class="nm">Theseus</span> keeps the mode itself; Night and Weekend start and end on their own</small></label><input type="checkbox" data-k="manageModes"></div>
-  <div class="row mgr"><label>Night<small>From / to, every day</small></label><span class="mrow"><input type="checkbox" data-k="nightOn"><input type="time" data-k="nightFrom"><input type="time" data-k="nightTo"></span></div>
-  <div class="row mgr"><label>Weekend<small>From Friday / to Monday</small></label><span class="mrow"><input type="checkbox" data-k="weekendOn"><input type="time" data-k="weekendFrom"><input type="time" data-k="weekendTo"></span></div>
-  <div class="row mgr"><label>Parking and queue<small>Parked sessions wait in the queue and resume, in order, while fewer than the mode's cap are working</small></label><input type="checkbox" data-k="manageQueue"></div>
-  <div class="row mgr"><label>Queue at night<small>Off: Night and Weekend start nothing new from the queue</small></label><input type="checkbox" data-k="queueAtNight"></div>
-  <div class="row mgr"><label>Running caps<small>Normal, Worker, Night, Weekend, Max perf, Max efficiency</small></label><span class="mrow" id="capRow"><input type="number" min="0" max="20" data-cap="normal" title="Normal"><input type="number" min="0" max="20" data-cap="worker" title="Worker"><input type="number" min="0" max="20" data-cap="night" title="Night"><input type="number" min="0" max="20" data-cap="weekend" title="Weekend"><input type="number" min="0" max="20" data-cap="performance" title="Max perf"><input type="number" min="0" max="20" data-cap="efficiency" title="Max efficiency"></span></div>
-  <div class="row mgr"><label>Mode messages<small>Sent to the active sessions on entering a mode (blank = none)</small></label></div>
-  <div class="row mgr mmsg"><label>Normal</label><input type="text" maxlength="400" data-mm="normal" spellcheck="false"></div>
-  <div class="row mgr mmsg"><label>Worker</label><input type="text" maxlength="400" data-mm="worker" spellcheck="false"></div>
-  <div class="row mgr mmsg"><label>Night</label><input type="text" maxlength="400" data-mm="night" spellcheck="false"></div>
-  <div class="row mgr mmsg"><label>Weekend</label><input type="text" maxlength="400" data-mm="weekend" spellcheck="false"></div>
-  <div class="row mgr mmsg"><label>Max perf</label><input type="text" maxlength="400" data-mm="performance" spellcheck="false"></div>
-  <div class="row mgr mmsg"><label>Max efficiency</label><input type="text" maxlength="400" data-mm="efficiency" spellcheck="false"></div>
-  <div class="row mgr"><label>Working rules<small id="rulesState"></small></label><span class="mrow"><button id="rulesPrev">Preview</button><button id="rulesIn">Install</button><button id="rulesOut">Remove</button></span></div>
-  <div class="row mgr"><label>Auto-compact window<small>Tokens, written by Install (0 = leave it)</small></label><input type="number" min="0" max="1000000" step="10000" data-k="compactWindow" data-num></div>
-  <div class="row mgr" id="rulesPreRow" style="display:none"><pre id="rulesPre"></pre></div>
-  <div class="row mgr"><label>Log<small>What session management did, newest last</small></label><button id="mgrLogBtn">Show log</button></div>
-  <div class="row mgr" id="mgrLogRow" style="display:none"><pre id="mgrLog"></pre></div>
-</section>
 
-<section data-card="theseus">
+<section data-card="audio">
   <h2>Voice</h2>
   <div class="row" data-addon="voice"><label>Voice<small>Default EchoStatus voice (Kokoro)</small></label><select data-k="voice" id="voice"></select></div>
   <div class="row" data-addon="feed voice"><label>Cycle voices<small>Each time <span class="nm">Theseus</span> is replaced, the next ticked voice takes over</small></label><input type="checkbox" data-k="voiceCycle"></div>
@@ -275,7 +352,7 @@
   <div class="row"><label>Test</label><button id="test">Speak a test line</button></div>
 </section>
 
-<section data-card="theseus" id="genVoice">
+<section data-card="audio" id="genVoice">
   <h2>Voice commands</h2>
   <div class="row"><label>Listen<small id="voiceNote">Offline, built-in Windows recognition</small></label>
     <select data-k="voiceCmd"><option value="off">Off</option><option value="ptt">Push-to-talk</option><option value="wake">Wake word</option><option value="always">Always on</option></select></div>
@@ -285,23 +362,27 @@
   <h2 data-addon="whisper">Voice questions</h2>
   <div class="row" data-addon="whisper"><label>Questions<small>"<span class="nm">Theseus</span>" + any question that is not a command (push-to-talk: just ask). Claude answers; local Whisper hears it</small></label><input type="checkbox" data-k="voiceAsk"></div>
   <div class="row" data-addon="whisper"><label>Let it act<small>Claude may open, start, message, answer and stop sessions and run PC actions when you ask. Sending, starting, answering and stopping are read back first, with time to say cancel</small></label><input type="checkbox" data-k="askActions"></div>
-  <div class="row"><label>Theseus tools in your sessions<small id="mcpNote">Adds Theseus to Claude Code, so your sessions can speak to you, show a caption, mark their tile as needing you, and read or search other sessions. New sessions get it</small></label><button id="mcpOn">Add</button> <button id="mcpOff">Remove</button></div>
-  <div class="row"><label>Sessions may use the tools<small>Off: the sphere refuses their calls</small></label><input type="checkbox" data-k="sessionTools"></div>
-  <div class="row"><label>Sessions may speak<small>Off: what they say shows as a caption only</small></label><input type="checkbox" data-k="sessionSpeak"></div>
-  <div class="row"><label>Sessions may message each other<small>With Theseus's own tool, a session can send another one a message, marked with its title. Needs App control. The Claude app's own session messaging is not affected</small></label><input type="checkbox" data-k="sessionsMessage"></div>
-  <div class="row" data-addon="whisper"><label>Web lookups<small>Search the web when a question needs current facts (news, prices, weather)</small></label><input type="checkbox" data-k="askWeb"></div>
   <div class="row" data-addon="whisper"><label>Speak answers<small>Off: the answer shows only as the caption under the sphere</small></label><input type="checkbox" data-k="askSpeak"></div>
-  <h2>Spoken alerts</h2>
-  <div class="row"><label>A session finished<small>It worked for 20 s or more and has stopped. Not for the card you have open</small></label><input type="checkbox" data-k="alertFinished"></div>
-  <div class="row"><label>A session needs you<small>It asks a question, wants its plan approved, or ends with a question</small></label><input type="checkbox" data-k="alertWaiting"></div>
-  <div class="row"><label>A session asks permission<small>A tool call waits on Allow or Deny. Alerts are spoken even with voice commands off; Speak answers off makes them captions only</small></label><input type="checkbox" data-k="alertPermission"></div>
-  <div class="row" data-addon="whisper"><label><small>Sessions by voice: "tell &lt;session&gt; …" (read back, sent after 3 s unless you say cancel), "what did &lt;session&gt; say", "stop &lt;session&gt;" (say yes)</small></label></div>
   <div class="row" data-addon="whisper"><label>Claude sign-in<small id="askNote">Run <b>claude setup-token</b> once and paste the token here</small></label>
     <input type="password" id="askTok" placeholder="token" style="min-width:110px;width:110px"> <button id="askSave">Save</button> <button id="askTest">Test</button></div>
 </section>
 
 <script src="bgshader.js"></script>
 <script>
+{ // folding panels (AudioCard_Spec): every heading folds the rows under it; remembered on this PC, all open at first
+  // except headings marked data-fold (Advanced): folded until opened, remembered the other way round
+  const KEY = 'foldedPanels', OKEY = 'openedPanels', keyOf = h => { const c = h.cloneNode(true); for (const n of c.querySelectorAll('.nm')) n.textContent = 'Theseus'; return c.textContent.trim(); };
+  const load = k => { try { return new Set(JSON.parse(localStorage.getItem(k) || '[]')); } catch { return new Set(); } };
+  const folded = load(KEY), opened = load(OKEY);
+  const setOf = h => h.dataset.fold ? opened : folded, isFolded = h => h.dataset.fold ? !opened.has(keyOf(h)) : folded.has(keyOf(h));
+  const apply = h => { const f = isFolded(h); h.classList.toggle('folded', f);
+    for (let el = h.nextElementSibling; el && el.tagName !== 'H2'; el = el.nextElementSibling) el.classList.toggle('foldhide', f); };
+  for (const h of document.querySelectorAll('section h2')) {
+    apply(h);
+    h.addEventListener('click', () => { const k = keyOf(h), st = setOf(h); st.has(k) ? st.delete(k) : st.add(k); apply(h);
+      try { localStorage.setItem(h.dataset.fold ? OKEY : KEY, JSON.stringify([...st])); } catch {} });
+  }
+}
 { // update line (UpdateButton_Spec)
   const $ = id => document.getElementById(id), go = $('updGo'), chk = $('updCheck'), nb = $('updNotes'), txt = $('updText');
   const show = s => {
@@ -338,6 +419,7 @@ for (const [g, list] of Object.entries(VOICES)) {
 const els = [...document.querySelectorAll('[data-k]')];
 const aos = [...document.querySelectorAll('[data-ao]')];
 // App control: the notice comes the first time it is switched on (in the section the switch is in)
+document.getElementById('newProj').addEventListener('click', () => window.sphere.openNewProject());
 const appCtls = [...document.querySelectorAll('.appctl')], noteOf = el => el.closest('section').querySelector('.appnote');
 for (const el of appCtls) el.addEventListener('change', () => {
   if (el.checked && !(lastS && lastS.appNoticeSeen)) { el.checked = false; noteOf(el).style.display = ''; return; }
@@ -369,20 +451,49 @@ const caps = [...document.querySelectorAll('[data-cap]')], mms = [...document.qu
 for (const el of caps) el.addEventListener('change', () => { const v = num(el); if (v != null) window.sphere.setSettings({ caps: { [el.dataset.cap]: v } }); });
 for (const el of mms) el.addEventListener('change', () => window.sphere.setSettings({ modeMsgs: { [el.dataset.mm]: el.value } }));
 const mAct = a => window.sphere.manage(a);
+document.getElementById('digOpen').addEventListener('click', () => mAct({ act: 'digest', hours: 12, show: true }));
+document.getElementById('blogOpen').addEventListener('click', () => mAct({ act: 'backlog-open' }));
 const preRow = document.getElementById('rulesPreRow'), pre = document.getElementById('rulesPre'), rState = document.getElementById('rulesState');
 const RULES_ABOUT = "The checkpoint and commit rules the swaps rely on, added to Claude Code's CLAUDE.md and settings.json (backed up first)";
+const ctxState = document.getElementById('ctxState'), K = { manager: 'Manager', worker: 'Worker' };
 async function rulesShow() {
   const r = await mAct({ act: 'rules-status' });
   rState.textContent = r && r.installed ? `Installed ${new Date(r.at).toLocaleString()} in ${r.dir}` : RULES_ABOUT;
   document.getElementById('rulesOut').disabled = !(r && r.installed);
+  // the folders that got a window, so it is clear why a session compacts where it does
+  ctxState.textContent = !(r && r.installed) ? 'Not installed: Install writes the three windows (with the working rules)'
+    : `Installed ${new Date(r.at).toLocaleString()}: Other ${r.window || 'left alone'} in ${r.dir}` + (r.local || []).map(x => `; ${K[x.kind] || x.kind} ${x.window} in ${x.file.replace(/[\\/]\.claude[\\/]settings\.local\.json$/, '')}`).join('')
+      + ((r.skipped || []).length ? `. Skipped: ${r.skipped.join('; ')}` : '');
 }
 document.getElementById('rulesPrev').onclick = async () => {
   if (preRow.style.display === '') { preRow.style.display = 'none'; return; }
   const p = await mAct({ act: 'rules-plan' }), bar = '-'.repeat(40);
-  pre.textContent = p.err ? p.err : `${p.mdFile}\n${bar}\n${p.md}\n\n${p.jsFile}\n${bar}\n${p.js}`; preRow.style.display = '';
+  pre.textContent = p.err ? p.err : `${p.mdFile}\n${bar}\n${p.md}\n\n${p.jsFile}\n${bar}\n${p.js}` + (p.local || []).map(x => `\n\n${x.file} (${K[x.kind]})\n${bar}\n${x.after}`).join('')
+    + ((p.skipped || []).length ? `\n\nSkipped: ${p.skipped.join('\n')}` : ''); preRow.style.display = '';
 };
-document.getElementById('rulesIn').onclick = async () => { const r = await mAct({ act: 'rules-install' }); rState.textContent = r.ok ? 'Installed.' : 'Not installed: ' + r.why; setTimeout(rulesShow, 1500); };
+const rulesIn = async st => { st.textContent = 'Installing...'; const r = await mAct({ act: 'rules-install' }); st.textContent = r.ok ? 'Installed.' : 'Not installed: ' + r.why; setTimeout(rulesShow, 1500); };
+document.getElementById('rulesIn').onclick = () => rulesIn(rState);
+document.getElementById('ctxIn').onclick = () => rulesIn(ctxState);
+// Context limits: two numbers per kind, saved as one key of swapLines / compactWindows
+const cls = [...document.querySelectorAll('[data-cl]')];
+for (const el of cls) el.addEventListener('change', () => { const [k, g] = el.dataset.cl.split('.'), v = num(el); if (v != null) window.sphere.setSettings({ [k]: { [g]: v } }); });
 document.getElementById('rulesOut').onclick = async () => { const r = await mAct({ act: 'rules-remove' }); rState.textContent = r.ok ? 'Removed.' : 'Not removed: ' + r.why; setTimeout(rulesShow, 1500); };
+const srPreRow = document.getElementById('srPreRow'), srPre = document.getElementById('srPre'), srState = document.getElementById('srState');
+const SR_ABOUT = 'Checks every Claude Code session makes before and after each step, following the Theseus mode. Added as a mod to settings.json (backed up first); the switches take effect once installed';
+async function srShow() {
+  const r = await mAct({ act: 'srules-status' });
+  srState.textContent = r && r.installed ? `Installed ${new Date(r.at).toLocaleString()} (${r.dir})` : SR_ABOUT;
+  document.getElementById('srOut').disabled = !(r && r.installed);
+}
+document.getElementById('srPrev').onclick = async () => {
+  if (srPreRow.style.display === '') { srPreRow.style.display = 'none'; return; }
+  const p = await mAct({ act: 'srules-plan' });
+  srPre.textContent = p.err ? p.err : `${p.jsFile}
+${'-'.repeat(40)}
+${p.js}`; srPreRow.style.display = '';
+};
+document.getElementById('srIn').onclick = async () => { const r = await mAct({ act: 'srules-install' }); srState.textContent = r.ok ? 'Installed. New sessions load the rules' + (r.warn ? '. ' + r.warn : '.') : 'Not installed: ' + r.why; setTimeout(srShow, r.warn ? 6000 : 1500); };
+document.getElementById('srOut').onclick = async () => { const r = await mAct({ act: 'srules-remove' }); srState.textContent = r.ok ? 'Removed. New sessions start without the rules.' : 'Not removed: ' + r.why; setTimeout(srShow, 1500); };
 const logRow = document.getElementById('mgrLogRow');
 document.getElementById('mgrLogBtn').onclick = async () => {
   if (logRow.style.display === '') { logRow.style.display = 'none'; return; }
@@ -392,30 +503,31 @@ document.getElementById('mgrOutsideOk').onclick = () => window.sphere.setSetting
 let rulesShown = false;
 function mgrUi(s) {
   const keep = new Set(['mgrWarn', 'rulesPreRow', 'mgrLogRow']);
-  for (const el of document.querySelectorAll('#manageSec .mgr')) if (!keep.has(el.id)) el.style.display = s.manageOn ? '' : 'none';
+  for (const el of document.querySelectorAll('#manageSec .mgr, #advSec .mgr')) if (!keep.has(el.id)) el.style.display = s.manageOn ? '' : 'none';
   for (const el of caps) if (!editing(el)) el.value = (s.caps || {})[el.dataset.cap];
+  for (const el of cls) if (!editing(el)) { const [k, g] = el.dataset.cl.split('.'); el.value = (s[k] || {})[g] ?? ''; }
   for (const el of mms) if (!editing(el)) el.value = (s.modeMsgs || {})[el.dataset.mm] || '';
   const w = [], st = s.manageState || {};
-  if (s.manageOn && !s.appControl) w.push('App control is off (General settings): swaps and the queue only warn, nothing is typed or started.');
+  if (s.manageOn && !s.appControl) w.push('App control is off (Session Management): swaps and the queue only warn, nothing is typed or started.');
   if (s.manageOn && st.outside && !s.manageOutsideOk) w.push('Another session manager is running (a Session Manager group). Swaps and the queue are held so the two do not fight.');
   document.getElementById('mgrWarn').style.display = w.length ? '' : 'none';
   document.getElementById('mgrWarnText').textContent = w.join(' ');
   document.getElementById('mgrOutsideOk').style.display = s.manageOn && st.outside && !s.manageOutsideOk ? '' : 'none';
-  if (s.manageOn && !rulesShown) { rulesShown = true; rulesShow(); }
+  if (s.manageOn && !rulesShown) { rulesShown = true; rulesShow(); srShow(); }
 }
 for (const el of document.querySelectorAll('input[type=number]')) el.addEventListener('blur', () => { if (lastS && num(el) == null) show(lastS); });
 // a bar card shows only its own sections (#general / #theseus); the plain settings window shows them all
-const CARD_TITLES = { general: 'General', theseus: 'Theseus', setup: 'Setup' }, NM = () => (lastS && lastS.name) || 'Theseus';
+const CARD_TITLES = { general: 'General', sessions: 'Session Management', audio: 'Audio', theseus: 'Theseus', setup: 'Setup' }, NM = () => (lastS && lastS.name) || 'Theseus';
 function showCard() {
   const c = location.hash.slice(1), isCard = (document.documentElement.classList.contains('card') && c in CARD_TITLES) || c === 'setup';   // setup shows alone, card or not
   for (const sec of document.querySelectorAll('section[data-card]')) sec.style.display = (!isCard && sec.dataset.card !== 'setup') || sec.dataset.card === c ? '' : 'none';
   document.getElementById('title').textContent = isCard ? (c === 'theseus' ? NM() : CARD_TITLES[c]) : NM();
   if (!isCard) document.getElementById(c)?.scrollIntoView(); else scrollTo(0, 0);
-  if (lastS) tileUi(lastS);   // a card shown by a hash change: its pictures and previews start now (they skip hidden sections)
+  if (lastS) { tileUi(lastS); fxUi(lastS); }   // a card shown by a hash change: its pictures and previews start now (they skip hidden sections)
 }
 showCard();
 function show(s) {
-  const nameNow = lastS && lastS.name; lastS = s; tileUi(s); bgUi(s); mgrUi(s);
+  const nameNow = lastS && lastS.name; lastS = s; tileUi(s); fxUi(s); bgUi(s); mgrUi(s);
   if (s.name !== nameNow) { for (const e of document.querySelectorAll('.nm')) e.textContent = NM(); document.title = NM() + ' settings'; showCard(); }
   for (const c of cvs) c.checked = (s.voiceCycleList || []).includes(c.value);
   document.getElementById('cycleRow').style.display = document.getElementById('cycleTestRow').style.display = s.voiceCycle ? '' : 'none';
@@ -446,12 +558,18 @@ function show(s) {
 for (const el of els) {
   const ev = el.type === 'range' ? 'input' : 'change';
   el.addEventListener(ev, () => {
-    const v = el.type === 'checkbox' ? el.checked : 'num' in el.dataset ? (el.type === 'number' ? num(el) : Number(el.value)) : el.value;
+    // a pasted path keeps no outer quotes or spaces (Explorer's "Copy as path")
+    const v = el.type === 'checkbox' ? el.checked : 'num' in el.dataset ? (el.type === 'number' ? num(el) : Number(el.value)) : (el.classList.contains('pth') ? el.value.trim().replace(/^"([^"]*)"$/, '$1').trim() : el.value.trim());   // (a path field only: a command keeps its quotes)
     if (v == null) return;
+    if (el.type === 'number' || el.type === 'text') el.value = String(v);   // the clamped / cleaned value is what shows
     const val = el.nextElementSibling; if (val && val.classList.contains('val')) val.textContent = el.dataset.unit ? v + ' ' + el.dataset.unit : Number(v).toFixed(2);
     if (el.type === 'range') {   // a drag: at most one setting change per 80 ms (the last value always goes)
       el._v = v; if (!el._t) el._t = setTimeout(() => { el._t = 0; window.sphere.setSettings({ [el.dataset.k]: el._v }); }, 80);
-    } else window.sphere.setSettings({ [el.dataset.k]: v });
+    } else window.sphere.setSettings({ [el.dataset.k]: v }).then(s => {
+      // a value the settings refused (not a full path, a space in a name) does not stay in the box as if saved: the saved one comes back
+      if (el.type !== 'text' || !s || s[el.dataset.k] === v) return;
+      el.value = String(s[el.dataset.k] ?? ''); el.title = 'Not saved: that value is not allowed here'; el.classList.add('refused'); setTimeout(() => { el.classList.remove('refused'); el.title = ''; }, 4000);
+    }, () => {});
     if (el.dataset.k === 'voiceCycle') document.getElementById('cycleRow').style.display = document.getElementById('cycleTestRow').style.display = v ? '' : 'none';
   });
 }
@@ -502,7 +620,22 @@ function tileUi(s) {
     prev.set({ wearOn: !!w.tileWearPreview, swapOn: !!w.tileSwapPreview, mode: w.tileSwap, wear: w.tileWear, glow: w.glow });
   }).catch(e => console.error('tile preview', e));
 }
-addEventListener('pagehide', () => { prev?.stop(); prev = null; });
+addEventListener('pagehide', () => { prev?.stop(); prev = null; fxPrev?.stop(); fxPrev = null; });
+// the start / close animation preview (fxpreview.js): only while ticked, its card shown and its row on screen
+const fxRow = document.getElementById('fxPrevRow');
+let fxPrev = null, fxSeen = true, fxWant = null, fxPlayNext = null;
+new IntersectionObserver(es => { const v = es[es.length - 1].isIntersecting; if (v !== fxSeen) { fxSeen = v; if (fxWant) fxUi(fxWant); } }).observe(fxRow);
+function fxUi(s) {
+  fxWant = s;
+  const shown = document.getElementById('startFx').offsetParent !== null, on = !!s.fxPreview && shown;
+  fxRow.style.display = on ? '' : 'none';
+  if (!on || !fxSeen) { fxPrev?.set({ on: false }); return; }
+  import('./fxpreview.js').then(m => {
+    const w = fxWant; fxPrev ||= m.startFxPreview(document.getElementById('fxPrev'), n => { document.getElementById('fxPrevName').textContent = n || ''; });
+    fxPrev.set({ on: true, startFx: w.startFx, closeFx: w.closeFx, glow: w.glow, wear: w.tileWear });
+    if (fxPlayNext) { fxPrev.play(fxPlayNext); fxPlayNext = null; }
+  }).catch(e => console.error('animation preview', e));
+}
 window.sphere.displays().then(ds => {
   const sel = document.getElementById('display');
   for (const d of ds) { const o = document.createElement('option'); o.value = d.id; o.textContent = d.label; sel.appendChild(o); }
@@ -572,8 +705,22 @@ function recButton() {
   $('recBtn').textContent = on ? `Stop  ${r.since ? mmss(Date.now() - r.since) : ''}` : 'REC';
   $('recBtn').classList.toggle('rec', true); $('recBtn').classList.toggle('on', on);
 }
+function showFocus(f) {
+  f = f || {};
+  $('focusOff').disabled = !f.on; $('focusOn').textContent = f.on ? 'Set' : 'On';
+  $('focusNote').firstChild.textContent = f.on ? `On${f.until ? ' till ' + new Date(f.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''} (${f.level || 'custom'}${f.setBy ? ', set by ' + f.setBy : ''}). While on, sessions send only clear-swaps and blockers (questions and picture updates in Worker mode only), and ` : 'Off. While on, sessions send only clear-swaps and blockers (questions and picture updates in Worker mode only), and ';
+}
+$('focusFor').onchange = () => { $('focusAt').style.display = $('focusFor').value === 'at' ? '' : 'none'; };
+$('focusOff').onclick = () => act('focusSet', { off: true });
+$('focusOn').onclick = () => {
+  const v = $('focusFor').value;
+  if (v !== 'at') return act('focusSet', { until: v ? Date.now() + Number(v) : null });
+  const m = /^(\d\d):(\d\d)$/.exec($('focusAt').value); if (!m) return;
+  const d = new Date(); d.setHours(+m[1], +m[2], 0, 0); if (d <= Date.now()) d.setDate(d.getDate() + 1);   // a time already past = tomorrow
+  act('focusSet', { until: d.getTime() });
+};
 function showTools(t) {
-  tools = t;
+  tools = t; showFocus(t.focus);
   const a = t.audio, av = t.avail.audio, rv = t.avail.rec;
   $('audioNote').style.display = av ? 'none' : '';
   buildCycle('outCycle', a ? a.outs || [] : []); buildCycle('micCycle', a ? a.mics || [] : []);
@@ -614,6 +761,8 @@ const askNote = (t, bad) => { $('askNote').textContent = t; $('askNote').style.c
 window.sphere.askToken().then(has => { if (has) askNote('Token saved. Test checks it'); });
 $('askSave').onclick = () => window.sphere.askToken($('askTok').value).then(has => { $('askTok').value = ''; askNote(has ? 'Token saved. Test checks it' : 'No token: uses the CLI login'); });
 $('askTest').onclick = () => { askNote('Asking Claude…'); window.sphere.askTest().then(r => askNote(r.ok ? `OK: "${r.text}" in ${(r.ms / 1000).toFixed(1)} s` : 'Failed: ' + r.why, !r.ok)); };
+// Play: the animation in the preview below (the sphere itself sits under this window); it turns the preview on first
+for (const [id, dir] of [['playStart', 'in'], ['playClose', 'out']]) $(id).onclick = () => { if (fxPrev && lastS && lastS.fxPreview) fxPrev.play(dir); else { fxPlayNext = dir; window.sphere.setSettings({ fxPreview: true }); } };
 $('outNext').onclick = () => act('nextOut'); $('micNext').onclick = () => act('nextMic');
 $('recBtn').onclick = () => act('recToggle'); $('saveReplay').onclick = () => act('saveReplay'); $('shot').onclick = () => act('screenshot');
 $('pickRegion').onclick = () => act('pickRegion'); $('pickWindow').onclick = () => act('pickWindow').then(w => { if (w) $('windowNote').textContent = w.title || 'Window chosen'; });

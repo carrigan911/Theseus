@@ -77,7 +77,7 @@ async function openFile(root, rel, line, how, cmd, shell) {
   }
   // the system opener runs programs and scripts: never from here (a voice Ask or a link could name one)
   // ("a.exe." and "a.exe " name a.exe on Windows); such a file is shown in its folder instead
-  if (/\.(exe|bat|cmd|com|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|lnk|url|scr|hta|cpl|reg|jar|appref-ms|application|pif|scf)$/i.test(f.replace(/[. ]+$/, ''))) {
+  if (/\.(exe|bat|cmd|com|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|lnk|url|scr|hta|cpl|reg|jar|appref-ms|application|pif|scf|py|pyw|pyz|msc|chm|settingcontent-ms|appinstaller|msix|msixbundle|appx|appxbundle|psc1|ps1xml|psd1|sct|wsc|jnlp|sh|bash|docm|xlsm|pptm|dotm|xlam|ppam|website|library-ms|search-ms|diagcab|iqy|slk|inf|gadget)$/i.test(f.replace(/[. ]+$/, ''))) {
     shell.showItemInFolder(f); return { ok: true, why: 'shown in its folder: it would run as a program (set an editor in Settings to open it)' };
   }
   const e = await shell.openPath(f); return e ? { ok: false, why: e } : { ok: true };

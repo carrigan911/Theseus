@@ -33,7 +33,7 @@ function create(opts = {}) {
   function onLine(line) {
     let r; try { r = JSON.parse(line); } catch { return; }
     if (!r) return;
-    if (typeof r.id === 'number') { fails = 0; if (r.state) takeState(r.state); done(r.id, r); return; }
+    if (typeof r.id === 'number') { if (r.state) takeState(r.state); done(r.id, r); return; }
     switch (r.event) {
       case 'ready': ready = true; break;
       case 'state': takeState(r.state); break;
@@ -49,7 +49,7 @@ function create(opts = {}) {
   function gone(p, hung) {   // hung: killed for not answering, counts as a quick death (no restart every 9 s)
     if (ps !== p) return;
     ps = null; buf = ''; ready = false;
-    fails = hung || Date.now() - startedAt < 5000 ? fails + 1 : 0;
+    fails = Date.now() - startedAt < 30000 ? fails + 1 : hung ? 1 : 0;   // (a helper that answers and then dies within 30 s still backs off)
     if (fails) retryAt = Date.now() + Math.min(30000, 1000 * 2 ** (fails - 1));
     for (const id of [...waiting.keys()]) done(id, { ok: false, why: 'helper exited' });
     if (wanted && !disposed && !respawnTimer) {

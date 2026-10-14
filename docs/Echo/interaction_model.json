@@ -1,0 +1,29 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "theseus",
+      "intents": [
+        { "name": "AMAZON.CancelIntent", "samples": [] },
+        { "name": "AMAZON.HelpIntent", "samples": [] },
+        { "name": "AMAZON.StopIntent", "samples": [] },
+        { "name": "AMAZON.NavigateHomeIntent", "samples": [] },
+        {
+          "name": "StatusIntent",
+          "samples": [
+            "for status", "who needs me", "does anyone need me", "what is waiting", "who has a question", "who is waiting",
+            "what's the status", "any questions", "for an update", "status"
+          ]
+        },
+        {
+          "name": "SessionIntent",
+          "slots": [{ "name": "session", "type": "AMAZON.SearchQuery" }],
+          "samples": [
+            "what is {session} doing", "what's {session} doing", "what {session} is doing", "how is {session} doing",
+            "what is {session} up to", "about {session}", "how is {session} going"
+          ]
+        }
+      ],
+      "types": []
+    }
+  }
+}

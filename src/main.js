@@ -1,29 +1,74 @@
 // Theseus main process: transparent desktop-layer window on half a screen (or all of it), click-through outside the sphere.
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, shell, globalShortcut, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, shell, globalShortcut, dialog, systemPreferences, safeStorage, powerMonitor } = require('electron');
+// every page stays a Theseus page: no navigation away (a link click, a dropped URL), no pop-up windows, no webviews, so a web
+// page can never get the preload bridge
+app.on('web-contents-created', (_e, wc) => {
+  const RENDERER = require('url').pathToFileURL(require('path').join(__dirname, 'renderer') + require('path').sep).href.toLowerCase();
+  const keep = (e, url) => { if (!String(url).toLowerCase().startsWith(RENDERER)) { e.preventDefault(); console.warn('[theseus] navigation refused: ' + String(url).slice(0, 120)); } };
+  wc.on('will-navigate', keep); wc.on('will-redirect', keep);
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  wc.on('will-attach-webview', e => e.preventDefault());
+});
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const feed = require('./feed');
 const voice = require('./voice');
 const claudeUi = require('./claudeui');
+const mailer = require('./mailer').create();
 const thumbs = require('./thumbs');
 const T = require('./theseus');
+const projects = require('./projects');
 const P = require('./paths');
+const PP = require('./privpaths');
 // App control (PublicVersion_Spec): the commands that act in the Claude app for you run only when it is on; reading
 // (state, snap, peek, artifacts, routines) and showing the app as a card stay available
 const APP_ACTS = new Set(['send', 'newsession', 'answer', 'permit', 'plan', 'set', 'manage', 'msgact', 'commands', 'attach', 'settings']);
-{ const raw = claudeUi.send; claudeUi.send = (cmd, ms) => cmd && APP_ACTS.has(cmd.cmd) && !settings.appControl ? Promise.resolve({ ok: false, why: 'App control is off (General settings)' }) : raw(cmd, ms); }
+{ const raw = claudeUi.send; claudeUi.send = (cmd, ms) => cmd && APP_ACTS.has(cmd.cmd) && !settings.appControl ? Promise.resolve({ ok: false, why: 'App control is off (Session Management)' }) : raw(cmd, ms); }
 let lastFeed = { sessions: [] }, rawFeed = null;   // rawFeed: the feed before session management (a re-apply starts from it)
+const revOn = new Map();   // sessionId -> its land review FAIL card (ReviewVerdicts_Spec); reviewMap fills it
+let reviews = null, demoCard = null, demoFeedOut = null;   // demo video: { title, card } puts a swap card on that tile
 const attn = new Map();   // sessionId -> { note, at }: a session asked for the user (its needs_you tool); the tile shows it waiting
 
+// a test build (built with extraMetadata.theseusChannel = 'test', product "Theseus Test") keeps its own folder so it installs and
+// runs beside the release; its first start copies the release's settings with session management and autostart off
+const CHANNEL = (() => { try { return require('../package.json').theseusChannel || ''; } catch { return ''; } })();
+function testUserData() {
+  const ud = path.join(app.getPath('appData'), 'session-sphere-test'), mine = path.join(ud, 'settings.json');
+  app.setPath('userData', ud);
+  if (fs.existsSync(mine)) return;
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(app.getPath('appData'), 'session-sphere', 'settings.json'), 'utf8'));
+    s.manageOn = false; s.autostart = false;
+    fs.mkdirSync(ud, { recursive: true }); fs.writeFileSync(mine, JSON.stringify(s, null, 2));
+  } catch {}
+}
 if (process.env.SPHERE_USERDATA) app.setPath('userData', process.env.SPHERE_USERDATA);   // tests: own settings + lock, so a test instance runs beside the real one
+else if (CHANNEL === 'test') testUserData();
 else app.setPath('userData', path.join(app.getPath('appData'), 'session-sphere'));      // fixed folder: the product name (Session Sphere -> Theseus) must not move the settings
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+// performance tests: SPHERE_GPU=low draws on the integrated GPU, soft in software (SwiftShader); SPHERE_PERF=1 logs every 5 s
+// the app's CPU (% of one core) and memory by process type, and the sphere's frame times
+if (process.env.SPHERE_GPU === 'low') app.commandLine.appendSwitch('force_low_power_gpu');
+else if (process.env.SPHERE_GPU === 'soft') { app.commandLine.appendSwitch('disable-gpu'); app.commandLine.appendSwitch('enable-unsafe-swiftshader'); }
+function perfProbe() {
+  if (!process.env.SPHERE_PERF) return;
+  const t0 = Date.now();
+  setTimeout(() => app.getGPUInfo('complete').then(g => { const f = app.getGPUFeatureStatus();   // (after the GPU process is up)
+    console.log('perf gpu', JSON.stringify((g.gpuDevice || []).map(d => d.vendorId.toString(16) + (d.active ? '*' : ''))), 'renderer=' + (g.auxAttributes?.glRenderer || ''), 'webgl=' + f.webgl, 'compositing=' + f.gpu_compositing); }, () => {}), 8000);
+  setInterval(() => {
+    const by = {}; let mem = 0;
+    for (const m of app.getAppMetrics()) { by[m.type] = (by[m.type] || 0) + m.cpu.percentCPUUsage; mem += m.memory.workingSetSize; }
+    console.log(`perf t=${Math.round((Date.now() - t0) / 1000)} cpu=${Object.entries(by).map(([k, v]) => k + ':' + v.toFixed(1)).join(' ')} memMB=${Math.round(mem / 1024)}`);
+  }, 5000);
+}
+ipcMain.handle('perf-on', () => !!process.env.SPHERE_PERF);
+ipcMain.on('perf', (_e, s) => { if (process.env.SPHERE_PERF) console.log('perf frames ' + JSON.stringify(s)); });
 const defaults = {
   side: 'left', display: 'primary', glow: '#3da5ff',
   fps: 30, renderScale: 1.5, labelRes: 1024,                 // frame cap (0 = display rate), supersampling, label pixels
   closeDelay: 3, spinMinutes: 2, idleGlow: 0.3,             // fold-back delay (s), one turn every N min (0 = still), idle core
-  autoFold: true, keepCardsOpen: true, tileActivity: true, contextRing: true, speechCaption: true, voiceAsk: true, voiceChat: true, chatWait: 8, askActions: true, sessionTools: true, sessionSpeak: true, sessionsMessage: false, askWeb: true, askSpeak: true, alertFinished: true, alertWaiting: true, alertPermission: true, claudeTray: false, tileWear: 0, tileSwap: 6, tileWearPreview: false, tileSwapPreview: false,   // tile rows fold back after the delay; an open card or menu stays until closed; working / waiting / idle looks
+  autoFold: true, keepCardsOpen: true, tileActivity: true, contextRing: true, speechCaption: true, voiceAsk: true, voiceChat: true, chatWait: 8, askActions: true, sessionTools: true, sessionSpeak: true, sessionsMessage: false, askWeb: true, askSpeak: true, alertFinished: true, alertWaiting: true, alertPermission: true, alertReview: true, claudeTray: false, tileWear: 0, tileSwap: 6, tileWearPreview: false, tileSwapPreview: false, fxPreview: false, startFx: 'random', closeFx: 'random',   // tile rows fold back after the delay; an open card or menu stays until closed; working / waiting / idle looks
   glowOnSpeech: true, voice: 'bm_lewis', voiceSpeed: 1.0, voiceCycle: false, voiceCycleList: [], voiceCycleMgr: '',   // talking glow; EchoStatus default voice (stateoice.json)
   autostart: false,
   sphereSize: 'medium', sphereGrowth: true, emptySpots: 'tiles', rowTileSize: 'large',   // small / medium / large / xlarge; growth: the sphere grows with the session count
@@ -39,7 +84,9 @@ const defaults = {
   outCycle: [], micCycle: [], strip: true, stripPos: null, sysReadout: false, sysAlerts: false, sysSpeak: false, voiceCmd: 'off', hotkeys: true,
   bgStyle: 'none', bgOpacity: 85, bgInTiles: false,          // background (Backgrounds_Spec): style, opacity %, also behind the spread rows
   // session management (SessionManagement_Spec): off by default; swaps at the line, modes + schedule, parking + queue
-  manageOn: false, manageSwaps: true, swapMethod: 'clear', manageModes: true, manageQueue: true, manageOutsideOk: false, swapTokens: 200000, swapAgeMin: 120,
+  manageOn: false, autoStall: false, autoDone: false, autoQuietMin: 10, autoPace: false, autoWarnPct: 80, autoWeekTarget: 95, autoParkAtLimit: true, autoBacklog: false, autoDigest: false, manageSwaps: true, swapQuiet: true, swapMethod: 'clear', manageModes: true, manageQueue: true, manageOutsideOk: false, manageSpeak: true, swapTokens: 200000, swapAgeMin: 120,
+  // ContextLimits_Spec: per kind (the feed's Session Manager / any other feed session / sessions outside the feed); swapTokens and compactWindow are the old single values (read only to migrate)
+  swapLines: { manager: 250000, worker: 200000, other: 200000 }, compactWindows: { manager: 500000, worker: 300000, other: 300000 },
   nightOn: true, nightFrom: '23:00', nightTo: '06:30', weekendOn: true, weekendFrom: '18:00', weekendTo: '06:30', queueAtNight: false, compactWindow: 300000,
   caps: { normal: 4, worker: 6, night: 1, weekend: 2, performance: 8, efficiency: 2 },
   modeMsgs: { normal: '', worker: '', night: 'Night mode: finish the current step, commit, update your checkpoint, then stop.',
@@ -47,12 +94,18 @@ const defaults = {
   // paths (PublicVersion_Spec): empty = not set up (an add-on stays off; recordings go to Videos, ffmpeg is looked up on PATH)
   addons: { modes: true, readout: true, feed: true, voice: true, whisper: true },   // add-on switches (each also needs its file)
   readerDays: 7,                                             // the built-in session reader: sessions changed within this many days
-  feedFile: '', modeDir: '', statusFile: '', echoDir: '', whisperPy: '', ffmpeg: '', transcriptsRoot: '', pathsVersion: 0,
-  name: 'Theseus', recPrefix: '', appControl: false, appNoticeSeen: false, setupDone: false,
+  feedFile: '', modeDir: '', statusFile: '', echoDir: '', whisperPy: '', ffmpeg: '', transcriptsRoot: '', reviewsDir: '', pathsVersion: 0,
+  name: 'Theseus', recPrefix: '', appControl: false, actionTiles: true, appNoticeSeen: false, setupDone: false,
   editor: 'system', editorCmd: '',                          // Files tab (Bridge_Spec): system default / vscode / custom command with {file} {line}
   recDir: '', replay: false, replaySec: 60, recSource: 'screen', recRegion: null, recMic: true, recSystem: true,
+  // Echo (Echo_Spec): alerts on the Amazon Echo through Voice Monkey, the "ask Theseus" skill; the token is kept encrypted (safeStorage)
+  echoOn: false, echoDevice: '', echoSkillId: '', echoHost: '', echoPublicHost: '', echoTokenEnc: '', echoNightQuiet: true, echoReplaced: false,
+  echoEvents: { waiting: true, permission: true, finished: false, stuck: false },
+  sessionRules: { ...require('./sessionrules').DEFAULTS },   // the Theseus mod's switches; nothing runs until Install
 };
-let settings = { ...defaults }, win, tray, settingsWin, frontOn = false, occluded = false;
+// Echo is on the far backlog (user 10-11: no open-mic through Alexa): hidden from Settings, never started, never announces
+const ECHO_SHELVED = true;
+let settingsLocked = false, settings = { ...defaults }, win, tray, settingsWin, frontOn = false, occluded = false;
 // the assistant's name (PublicVersion_Spec): titles, tray, spoken lines, the wake word; its words at the start of a question
 const NAME = () => settings.name || 'Theseus';
 const wakeRe = () => {
@@ -76,44 +129,60 @@ const VOICE = v => typeof v === 'string' && /^[a-z]{2}_[a-z0-9_]{1,30}$/i.test(v
 const RULES = {
   side: en('left', 'right', 'full'), display: v => typeof v === 'string' && v.length <= 40 ? v : typeof v === 'number' && isFinite(v) ? String(v) : undefined,
   glow: col, fps: nm(0, 240), renderScale: nm(0.5, 4), labelRes: v => { v = nm(256, 4096)(v); return v === undefined ? v : Math.round(v); },
-  closeDelay: nm(0, 60), spinMinutes: nm(0, 120), idleGlow: nm(0, 1), autoFold: bl, keepCardsOpen: bl, claudeTray: bl, tileActivity: bl, contextRing: bl, speechCaption: bl, voiceAsk: bl, askActions: bl, sessionTools: bl, sessionSpeak: bl, sessionsMessage: bl, askWeb: bl, askSpeak: bl, voiceChat: bl, chatWait: nm(3, 30), alertFinished: bl, alertWaiting: bl, alertPermission: bl, tileWear: v => { v = nm(0, 12)(v); return v === undefined ? v : Math.round(v); }, tileSwap: en(1, 2, 3, 4, 5, 6), tileWearPreview: bl, tileSwapPreview: bl, glowOnSpeech: bl,
+  closeDelay: nm(0, 60), spinMinutes: nm(0, 120), idleGlow: nm(0, 1), autoFold: bl, keepCardsOpen: bl, claudeTray: bl, tileActivity: bl, contextRing: bl, speechCaption: bl, voiceAsk: bl, askActions: bl, sessionTools: bl, sessionSpeak: bl, sessionsMessage: bl, askWeb: bl, askSpeak: bl, voiceChat: bl, chatWait: nm(3, 30), alertFinished: bl, alertWaiting: bl, alertPermission: bl, alertReview: bl, tileWear: v => { v = nm(0, 12)(v); return v === undefined ? v : Math.round(v); }, tileSwap: en(1, 2, 3, 4, 5, 6), startFx: en('off', 'random', 'worm', 'bh', 'tp', 'fly', 'ftl', 'beam', 'fall'), closeFx: en('off', 'random', 'worm', 'bh', 'tp', 'fly', 'ftl', 'beam', 'fall'), tileWearPreview: bl, tileSwapPreview: bl, fxPreview: bl, glowOnSpeech: bl,
   voice: VOICE, voiceSpeed: nm(0.5, 2), voiceCycle: bl, voiceCycleList: v => Array.isArray(v) ? v.filter(x => VOICE(x)).slice(0, 80) : undefined,
   voiceCycleMgr: v => typeof v === 'string' && v.length <= 100 ? v : undefined, autostart: bl,
   sphereSize: en('small', 'medium', 'large', 'xlarge'), sphereGrowth: bl, emptySpots: en('tiles', 'open'), rowTileSize: en('large', 'medium', 'small'), tileAlign: en('left', 'center', 'right'), flatShape: en('regular', 'hexagon'), coreFollowsMode: bl, modeMotion: bl, spikeStrength: nm(0, 2),
   bgStyle: en('none', 'black', 'space', 'moving', 'gradient', 'travel'), bgOpacity: nm(0, 100), bgInTiles: bl,
-  manageOn: bl, manageSwaps: bl, swapMethod: en('clear', 'new'), manageModes: bl, manageQueue: bl, manageOutsideOk: bl, swapTokens: nm(50000, 1000000), swapAgeMin: nm(0, 1440),
+  manageOn: bl, autoStall: bl, autoDone: bl, autoQuietMin: nm(1, 120), autoPace: bl, autoWarnPct: nm(50, 99), autoWeekTarget: nm(50, 100), autoParkAtLimit: bl, autoBacklog: bl, autoDigest: bl, manageSwaps: bl, swapQuiet: bl, swapMethod: en('clear', 'new'), manageModes: bl, manageQueue: bl, manageOutsideOk: bl, manageSpeak: bl, swapTokens: nm(50000, 1000000), swapAgeMin: nm(0, 1440),
   nightOn: bl, nightFrom: TIME, nightTo: TIME, weekendOn: bl, weekendFrom: TIME, weekendTo: TIME, queueAtNight: bl, compactWindow: nm(0, 1000000),
   outCycle: IDS, micCycle: IDS, strip: bl, stripPos: POS, sysReadout: bl, sysAlerts: bl, sysSpeak: bl, voiceCmd: en('off', 'ptt', 'wake', 'always'), hotkeys: bl,
-  readerDays: nm(1, 60), recDir: PATHE, feedFile: PATHE, modeDir: PATHE, statusFile: PATHE, echoDir: PATHE, whisperPy: PATHE, ffmpeg: PATHE, transcriptsRoot: PATHE,
+  readerDays: nm(1, 60), recDir: PATHE, feedFile: PATHE, modeDir: PATHE, statusFile: PATHE, echoDir: PATHE, whisperPy: PATHE, ffmpeg: PATHE, transcriptsRoot: PATHE, reviewsDir: PATHE,
   name: v => typeof v === 'string' && /^\p{L}[\p{L}' -]{0,30}$/u.test(v.trim()) ? v.trim() : undefined, recPrefix: v => typeof v === 'string' && /^[\w-]{0,30}$/.test(v) ? v : undefined,
-  appControl: bl, appNoticeSeen: bl, setupDone: bl, pathsVersion: nm(0, 99), editor: en('system', 'vscode', 'custom'), editorCmd: v => typeof v === 'string' && v.length <= 400 ? v : undefined,
+  appControl: bl, actionTiles: bl, appNoticeSeen: bl, setupDone: bl, pathsVersion: nm(0, 99), editor: en('system', 'vscode', 'custom'), editorCmd: v => typeof v === 'string' && v.length <= 400 ? v : undefined,
+  echoOn: bl, echoDevice: v => typeof v === 'string' && v.length <= 100 ? v.trim() : undefined, echoSkillId: v => typeof v === 'string' && /^(amzn1\.ask\.skill\.[\w-]{8,80})?$/.test(v.trim()) ? v.trim() : undefined,
+  echoHost: v => typeof v === 'string' && /^([a-z0-9-]+\.)*[a-z0-9-]*$/i.test(v) && v.length <= 200 ? v : undefined,
+  echoPublicHost: v => typeof v === 'string' && /^([a-z0-9-]+\.)*[a-z0-9-]*$/i.test(v) && v.length <= 200 ? v : undefined, echoTokenEnc: v => typeof v === 'string' && /^[A-Za-z0-9+/=]{0,4000}$/.test(v) ? v : undefined, echoNightQuiet: bl, echoReplaced: bl,
   replay: bl, replaySec: v => { v = nm(10, 600)(v); return v === undefined ? v : Math.round(v); }, recSource: en('screen', 'region', 'window'), recRegion: REGION, recMic: bl, recSystem: bl,
 };
-const NESTED = { modeColors: col, modeSpeed: nm(0, 10), modeBright: nm(0, 5), tilesSphere: bl, tilesRows: bl, addons: bl,
-  caps: v => { v = nm(0, 20)(v); return v === undefined ? v : Math.round(v); }, modeMsgs: v => typeof v === 'string' && v.length <= 400 ? v : undefined };
+const NESTED = { modeColors: col, modeSpeed: nm(0, 10), modeBright: nm(0, 5), tilesSphere: bl, tilesRows: bl, addons: bl, echoEvents: bl, sessionRules: bl,
+  caps: v => { v = nm(0, 20)(v); return v === undefined ? v : Math.round(v); }, modeMsgs: v => typeof v === 'string' && v.length <= 400 ? v : undefined,
+  swapLines: nm(50000, 1000000), compactWindows: nm(0, 1000000) };
 function clean(p) {
   const o = {};
   if (!p || typeof p !== 'object') return o;
   for (const k of Object.keys(p)) {
     if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
     const v = p[k];
-    if (NESTED[k]) {
+    if (Object.hasOwn(NESTED, k)) {
       if (!v || typeof v !== 'object') continue;
       o[k] = {}; for (const m of Object.keys(defaults[k])) { const x = NESTED[k](v[m]); if (x !== undefined) o[k][m] = x; }
-    } else if (RULES[k]) { const x = RULES[k](v); if (x !== undefined) o[k] = x; }
+    } else if (Object.hasOwn(RULES, k)) { const x = RULES[k](v); if (x !== undefined) o[k] = x; }
     else if (typeof v === 'boolean' || (typeof v === 'number' && isFinite(v)) || (typeof v === 'string' && v.length <= 200)) o[k] = v;
   }
   return o;
 }
 const merge = (base, p) => ({ ...base, ...p, modeColors: { ...base.modeColors, ...p.modeColors }, modeSpeed: { ...base.modeSpeed, ...p.modeSpeed }, modeBright: { ...base.modeBright, ...p.modeBright },
-  tilesSphere: { ...base.tilesSphere, ...p.tilesSphere }, tilesRows: { ...base.tilesRows, ...p.tilesRows }, addons: { ...base.addons, ...p.addons }, caps: { ...base.caps, ...p.caps }, modeMsgs: { ...base.modeMsgs, ...p.modeMsgs } });
+  tilesSphere: { ...base.tilesSphere, ...p.tilesSphere }, tilesRows: { ...base.tilesRows, ...p.tilesRows }, addons: { ...base.addons, ...p.addons }, caps: { ...base.caps, ...p.caps }, modeMsgs: { ...base.modeMsgs, ...p.modeMsgs }, echoEvents: { ...base.echoEvents, ...p.echoEvents }, sessionRules: { ...base.sessionRules, ...p.sessionRules },
+  swapLines: { ...base.swapLines, ...p.swapLines }, compactWindows: { ...base.compactWindows, ...p.compactWindows } });
 function loadSettings() {
   P.set(() => settings);
   settings = null;
+  // a locked file (antivirus, a backup) is read again a few times; one that exists but stays unreadable is never overwritten
+  const readLocked = f => { for (let i = 0; ; i++) { try { return fs.readFileSync(f, 'utf8'); } catch (e) { if (e.code === 'ENOENT' || i >= 4) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200); } } };
+  let locked = false;
   for (const f of [settingsPath, settingsPath + '.bak']) {            // a damaged file falls back to the last good copy
-    try { settings = merge(defaults, clean(JSON.parse(fs.readFileSync(f, 'utf8')))); break; } catch {}
+    try {
+      let txt; try { txt = readLocked(f); } catch (e) { if (e.code !== 'ENOENT' && f === settingsPath) locked = true; throw e; }
+      const raw = clean(JSON.parse(txt)); settings = merge(defaults, raw);
+      // a profile from before the per-kind limits: its single swap line and window become the worker numbers
+      if (!raw.swapLines && raw.swapTokens) settings.swapLines.worker = raw.swapTokens;
+      if (!raw.compactWindows && raw.compactWindow) settings.compactWindows.worker = raw.compactWindow;
+      break;
+    } catch {}
   }
   if (!settings) settings = { ...defaults };
+  settingsLocked = locked && !settings.pathsVersion;   // nothing good was read and the real file is there: hands off it this run
   // paths as settings (PublicVersion_Spec): a profile from before (or a new one) takes this PC's own setup from
   // personal.settings.json beside the app once; without that file (the public package) it starts as a fresh install
   if (!settings.pathsVersion) {
@@ -122,6 +191,32 @@ function loadSettings() {
     if (own) { delete own['//']; if (settings.recDir) delete own.recDir; settings = merge(settings, own); }   // merge: a partial caps / modeColors keeps the other keys
     settings.pathsVersion = 1; saveSettings();
   }
+  // version 2 (ReviewVerdicts_Spec, 10-12): the land reviews folder came later, so a profile already past version 1 takes it once too
+  if (settings.pathsVersion < 2) {
+    let own = null;
+    if (!process.env.SPHERE_NO_PERSONAL) try { own = clean(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'personal.settings.json'), 'utf8'))); } catch {}
+    if (own && own.reviewsDir && !settings.reviewsDir) settings.reviewsDir = own.reviewsDir;
+    settings.pathsVersion = 2; saveSettings();
+  }
+  lockedBase = settingsLocked ? JSON.stringify(settings) : null;   // (what changes this run, if the file reads later)
+}
+// settings.json locked at start: each save tries it again; once it reads, the changes made this run go over it and it is written
+let lockedBase = null;
+function unlockSettings() {
+  let file; try { file = clean(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))); } catch (e) { if (e.code !== 'ENOENT') return false; file = {}; }
+  const base = JSON.parse(lockedBase || '{}'), changed = {};
+  const nested = v => v && typeof v === 'object' && !Array.isArray(v);
+  for (const k of Object.keys(settings)) {
+    if (k === 'pathsVersion' || JSON.stringify(settings[k]) === JSON.stringify(base[k])) continue;
+    if (Object.hasOwn(NESTED, k) && nested(settings[k]) && nested(base[k])) {   // (a position or region stays whole)   // only the inner keys that changed: the file's other inner keys stay
+      const o = {}; for (const m of Object.keys(settings[k])) if (JSON.stringify(settings[k][m]) !== JSON.stringify(base[k][m])) o[m] = settings[k][m];
+      changed[k] = nested(file[k]) ? { ...file[k], ...o } : o;
+    } else changed[k] = settings[k];
+  }
+  settings = merge(merge(defaults, file), changed); if (!settings.pathsVersion) settings.pathsVersion = 1;
+  settingsLocked = false; lockedBase = null; console.warn('[theseus] settings.json readable again: this run\'s changes merged into it');
+  try { pushSettings(); } catch {}
+  return true;
 }
 // voice cycle: each time Theseus is replaced the next ticked voice takes over. A replacement = a Session Manager id not among the
 // last 5 manager ids seen, while the old one has left the feed. The first read after start only records the id.
@@ -147,6 +242,7 @@ function nextVoice() {
 }
 let builtin = null;   // the built-in Windows voice (src/speech.js), started on first use when the External voice add-on is off
 function speak(line, done) {   // done: after the line has played (or failed)
+  line = require('./spoken').spoken(line);   // no project prefix ("Other:", "Titans:") in what is said
   // a test instance (own userData) stays silent unless asked: its profile has no voice set, so it would use the Windows voice
   // (it still takes about as long as the line would, so "stop talking" can be tested)
   if (process.env.SPHERE_USERDATA && !process.env.SPHERE_SPEAK_OK) {
@@ -178,7 +274,10 @@ function writeVoice() { try { if (P.echo()) fs.writeFileSync(path.join(P.echo(),
 // rect (content DIPs of the sphere window) = show it as a rounded card over the panel, like the chat card; none = a normal window
 function openSettings(section = '', rect = null) {
   const card = !!(rect && win && !win.isDestroyed());
-  if (settingsWin && !settingsWin.isDestroyed() && settingsWin.card !== card) { const w = settingsWin; settingsWin = null; w.destroy(); }
+  if (settingsWin && !settingsWin.isDestroyed() && settingsWin.card !== card) {
+    const w = settingsWin, was = w.card; settingsWin = null; w.destroy();
+    if (was && win && !win.isDestroyed()) win.webContents.send('overlay-closed');   // (its own closed handler no longer sees it as current)
+  }
   if (settingsWin && !settingsWin.isDestroyed()) {
     settingsWin.show(); settingsWin.focus();
     settingsWin.webContents.executeJavaScript(`location.hash = ''; location.hash = ${JSON.stringify(section)}`).catch(() => {});
@@ -215,6 +314,8 @@ function closeSettingsCard(quiet) {
 // The claude:// handler in the registry can point at a removed app version after an update; fall back to the
 // Squirrel launcher (always starts the current version, which hands the link to the running app).
 function openLink(link) {
+  // only the Claude app's own links: a feed or session link is data, and the system opener would run a file:// or other program link
+  if (typeof link !== 'string' || !/^claude:\/\/claude\.ai\/[\w\/-]+$/.test(link)) { console.warn('[theseus] link refused: ' + String(link).slice(0, 120)); return; }
   const stub = path.join(process.env.LOCALAPPDATA || '', 'AnthropicClaude', 'claude.exe');
   shell.openExternal(link).catch(() => execFile(stub, [link], { windowsHide: true }, () => {}));
 }
@@ -238,14 +339,15 @@ function writeAtomic(file, data, bak) {
 let saveT = null;
 let saveTries = 0;   // a failed write is tried again 5 times, 5 s apart (a locked file), then waits for the next change
 function saveSettings() { saveTries = 0; clearTimeout(saveT); saveT = setTimeout(flushSettings, 300); }     // debounced: a slider drag is one write
-function flushSettings() { clearTimeout(saveT); saveT = null; try { writeAtomic(settingsPath, JSON.stringify(settings, null, 2), true); } catch { if (++saveTries <= 5) saveT = setTimeout(flushSettings, 5000); } }
+function flushSettings() { clearTimeout(saveT); saveT = null; if (settingsLocked && !unlockSettings()) { console.warn('[theseus] settings.json could not be read at start: not overwritten'); if (++saveTries <= 5) saveT = setTimeout(flushSettings, 5000); return; } try { writeAtomic(settingsPath, JSON.stringify(settings, null, 2), true); } catch { if (++saveTries <= 5) saveT = setTimeout(flushSettings, 5000); } }
 // what the pages get: the settings plus the add-ons' live state (live: { k: { on, found } })
 // a personal copy (personal.settings.json beside the app) shows its add-ons in settings; the public install does not
 const PERSONAL = !process.env.SPHERE_NO_PERSONAL && fs.existsSync(path.join(__dirname, '..', 'personal.settings.json'));
-let mgr = null, rulesI = null;   // session management (manage.js) and the working-rules installer (rules.js), made at start
+let mgr = null, rulesI = null, srules = null, auto = null;   // session management (manage.js), the working-rules installer (rules.js), the Theseus mod (sessionrules.js) and autonomy (autonomy.js), made at start
 const uiSettings = () => {
   const live = P.addons(); if (settings.manageOn && settings.manageModes) live.modes = { on: true, found: true };   // managed mode: the picker shows
-  return { ...settings, live, personal: PERSONAL, manageState: mgr ? mgr.state() : null };
+  const { echoTokenEnc, ...rest } = settings;   // the Voice Monkey token stays in main
+  return { ...rest, live, personal: PERSONAL, manageState: mgr ? mgr.state() : null };
 };
 const ADDON_KEYS = ['addons', 'feedFile', 'modeDir', 'statusFile', 'echoDir', 'whisperPy'];
 function pushSettings() { const s = uiSettings(); for (const w of [settingsWin, stripWin, win]) if (w && !w.isDestroyed()) w.webContents.send('settings', s); }
@@ -279,7 +381,11 @@ function halfBounds() {
 function sendToBottom(retries = 2) {
   if (!win || win.isDestroyed() || frontOn) return;
   const hwnd = hwndOf(win);
-  zorder.send({ cmd: 'bottom', hwnd }, 10000).then(r => { if (!r.ok && retries > 0) setTimeout(() => sendToBottom(retries - 1), 1000); else bgUnder(); });
+  zorder.send({ cmd: 'bottom', hwnd }, 10000).then(r => {
+    // the sphere came to the front while the command waited: bottom also drops TOPMOST, so raise it again
+    if (frontOn) { if (win && !win.isDestroyed()) { win.setAlwaysOnTop(true, 'screen-saver'); win.moveTop(); } return; }
+    if (!r.ok && retries > 0) setTimeout(() => sendToBottom(retries - 1), 1000); else bgUnder();
+  });
 }
 const hwndOf = w => Number(w.getNativeWindowHandle().readBigUInt64LE(0));
 
@@ -293,7 +399,7 @@ const bgBounds = () => frontOn ? win.getBounds() : screen.getDisplayMatching(win
 const differs = (a, b) => a.x !== b.x || a.y !== b.y || a.width !== b.width || a.height !== b.height;
 function bgSend() {
   if (!alive(bgWin)) return;
-  bgWin.webContents.send('bg', { style: settings.bgStyle, opacity: settings.bgOpacity / 100, visible: bgOn(), tint: bgExtra.tint, speed: bgExtra.working ? 1.3 : 1, paused: bgPaused && !frontOn });
+  bgWin.webContents.send('bg', { style: settings.bgStyle, opacity: settings.bgOpacity / 100, visible: bgOn(), tint: bgExtra.tint, speed: bgExtra.working ? 1.3 : 1, paused: (bgPaused && !frontOn) || fxRun });   // still while a start / close animation plays (user 10-11)
 }
 function bgUnder() { if (alive(bgWin) && bgWin.isVisible() && !frontOn && alive(win)) zorder.send({ cmd: 'under', hwnd: hwndOf(bgWin), after: hwndOf(win) }, 10000).catch(() => {}); }
 function syncBg() {
@@ -312,7 +418,7 @@ function syncBg() {
     w.setIgnoreMouseEvents(true);
     w.on('closed', () => { if (bgWin === w) bgWin = null; });
     bgReady = false;
-    w.webContents.on('did-finish-load', () => { if (bgWin === w) { bgReady = true; syncBg(); } });
+    w.webContents.on('did-finish-load', () => { if (bgWin === w) { bgReady = true; syncBg(); if (fxLive) fxBgSend(); } });
     w.loadFile(path.join(__dirname, 'renderer', 'bg.html'));
     return;   // placed once loaded
   }
@@ -323,6 +429,100 @@ function syncBg() {
   bgSend();
 }
 
+// start / close animations (StartupFx_Spec): the renderer plays them; none at shutdown / sign-out or with Windows animations off.
+// The background window fades with them.
+const FX_KINDS = ['worm', 'bh', 'tp', 'fly', 'ftl', 'beam', 'fall'];
+// a start / close animation to the sphere window; Lightfall also to the background window (its squeeze and shake, same moment)
+// (a background window still loading at start gets it once loaded and placed, ago = how far it has played)
+let fxLive = null;
+function fxToBg(m) {
+  fxLive = m && m.kind === 'fall' ? { m, at: Date.now() } : null;
+  fxBgSend();
+}
+function fxBgSend() {
+  if (!alive(bgWin) || !bgReady) return;
+  if (!fxLive || !alive(win) || Date.now() - fxLive.at > 3000) { bgWin.webContents.send('fx', null); return; }
+  const wb = win.getBounds(), bb = bgWin.getBounds();
+  bgWin.webContents.send('fx', { dir: fxLive.m.dir, beamX: (wb.x + wb.width / 2 - bb.x) / Math.max(1, bb.width), ago: Date.now() - fxLive.at });
+}
+const fxStreak = () => !bgOn() || settings.bgStyle === 'black' || settings.bgStyle === 'none';   // no space behind: Lightfall draws light streaks
+function sendIntro(m) {
+  if (m.kind === 'fall') m.streak = fxStreak();
+  win.webContents.send('intro', m); fxToBg(m);
+}
+const bgInMs = kind => kind === 'off' ? 0 : kind === 'fall' ? 400 : 2500;   // Lightfall needs space there to squeeze
+let fxOff = false, introServed = false, shownOnce, outroing = null, bgFadeT = 0, fxRun = false, fxRunT = 0;
+// a moving background holds still until the animation is over (at most 4 s)
+function freezeBg(on) { clearTimeout(fxRunT); if (on) fxRunT = setTimeout(() => freezeBg(false), 4000); if (fxRun !== on) { fxRun = on; bgSend(); } }
+const firstShow = new Promise(r => { shownOnce = r; });
+function fxKind(which) {
+  if (fxOff) return 'off';
+  try { if (process.platform === 'win32' && !systemPreferences.getAnimationSettings().shouldRenderRichAnimation) return 'off'; } catch {}
+  const k = settings[which];
+  return k === 'random' ? FX_KINDS[Math.floor(Math.random() * FX_KINDS.length)] : FX_KINDS.includes(k) ? k : 'off';
+}
+function fadeBg(to, ms) {
+  clearInterval(bgFadeT);
+  if (!bgWin || bgWin.isDestroyed()) return;
+  if (!ms) { bgWin.setOpacity(to); return; }
+  const from = to ? 0 : bgWin.getOpacity(), t0 = Date.now(); bgWin.setOpacity(from);
+  bgFadeT = setInterval(() => {
+    if (!bgWin || bgWin.isDestroyed()) return clearInterval(bgFadeT);
+    const k = Math.min(1, (Date.now() - t0) / ms); bgWin.setOpacity(from + (to - from) * k); if (k >= 1) clearInterval(bgFadeT);
+  }, 33);
+}
+function playIntro() {
+  if (!win || win.isDestroyed()) return;
+  const kind = fxKind('startFx'); freezeBg(kind !== 'off'); sendIntro({ dir: 'in', kind, side: settings.side }); fadeBg(1, bgInMs(kind));
+}
+// resolves once the close animation is done (at most 3 s); the window is left as it is
+function playOutro() {
+  if (outroing) return outroing;
+  if (!win || win.isDestroyed() || !win.isVisible()) return Promise.resolve();
+  const kind = fxKind('closeFx'); if (kind === 'off') return Promise.resolve();
+  return outroing = new Promise(res => {
+    const done = () => { clearTimeout(t); ipcMain.removeListener('intro-done', on); outroing = null; freezeBg(false); res(); };
+    const on = (e, d) => { if (fromWin(e) && d === 'out') done(); };
+    const t = setTimeout(done, 3000);
+    ipcMain.on('intro-done', on);
+    freezeBg(true); sendIntro({ dir: 'out', kind, side: settings.side });
+    if (kind === 'fall') setTimeout(() => fadeBg(0, 300), 1200); else fadeBg(0, 1500);   // Lightfall: space stays until the beam winks out
+  });
+}
+// the tray's Show / hide (and voice "hide"): the close animation, then hide; showing plays the start
+function showSphere() { if (win && !win.isDestroyed() && !win.isVisible()) { win.showInactive(); sendToBottom(); syncBg(); playIntro(); } }
+function hideSphere() {
+  if (!win || win.isDestroyed() || !win.isVisible() || outroing) return;
+  playOutro().then(() => { if (win && !win.isDestroyed()) { win.hide(); syncBg(); fadeBg(1, 0); } });
+}
+// the renderer asks for its first start animation once its page has run (a reloaded page gets none)
+ipcMain.handle('intro-first', async e => {
+  if (!fromWin(e)) return null;
+  await Promise.race([firstShow, new Promise(r => setTimeout(r, 5000))]);
+  if (introServed) return { dir: 'in', kind: 'off' };
+  introServed = true; const kind = fxKind('startFx'); freezeBg(kind !== 'off'); fadeBg(1, bgInMs(kind));
+  const m = { dir: 'in', kind, side: settings.side }; if (kind === 'fall') { m.streak = fxStreak(); fxToBg(m); }
+  return m;
+});
+// Settings' Play buttons: the chosen animation on the sphere; after a close it comes straight back
+ipcMain.handle('play-fx', async (e, dir, kind) => {
+  if (!settingsWin || settingsWin.isDestroyed() || e.sender !== settingsWin.webContents || !win || win.isDestroyed() || !win.isVisible() || outroing) return false;
+  return playFx(dir, kind);
+});
+async function playFx(dir, kind) {
+  const k = kind === 'random' ? FX_KINDS[Math.floor(Math.random() * FX_KINDS.length)] : FX_KINDS.includes(kind) ? kind : null;
+  if (!k) return false;
+  freezeBg(true);
+  if (dir === 'out') {
+    sendIntro({ dir: 'out', kind: k, side: settings.side });
+    await new Promise(r => setTimeout(r, 2100));
+    if (win && !win.isDestroyed()) win.webContents.send('intro', { dir: 'in', kind: 'off' });
+    freezeBg(false);
+  } else sendIntro({ dir: 'in', kind: k, side: settings.side });
+  return true;
+}
+ipcMain.on('intro-done', (e, d) => { if (!fromWin(e)) return; fxToBg(null); if (d === 'in') freezeBg(false); });   // (a click skip too: no squeeze or shake left)   // (playOutro listens for 'out' while it waits)
+
 function createWindow() {
   win = new BrowserWindow({
     ...halfBounds(), transparent: true, frame: false, hasShadow: false, skipTaskbar: true, focusable: false,
@@ -332,7 +532,9 @@ function createWindow() {
   win.setIgnoreMouseEvents(true, { forward: true });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   watchConsole(win.webContents, 'sphere');
-  win.once('ready-to-show', () => { win.showInactive(); sendToBottom(); syncBg(); if (process.env.SPHERE_SHOTS) testShots(); });
+  win.once('ready-to-show', () => { win.showInactive(); sendToBottom(); syncBg(); shownOnce(); if (process.env.SPHERE_SHOTS) testShots(); if (process.env.SPHERE_DEMO && process.env.SPHERE_USERDATA) demoRun(); });
+  // Windows is shutting down or signing out: close at once, no animation
+  win.on('query-session-end', () => { fxOff = true; }); win.on('session-end', () => { fxOff = true; });
   win.on('show', () => setTimeout(sendToBottom, 200));
   // a crashed or killed renderer: load the page again (not in a tight loop)
   let gone = [];
@@ -343,19 +545,59 @@ function createWindow() {
     if (gone.length <= 5) setTimeout(() => { if (win && !win.isDestroyed()) win.webContents.reload(); }, 1000);
   });
   win.webContents.on('did-start-loading', () => { occluded = false; });   // a fresh page starts as visible
+  // blank sphere with the process still alive (10-13: window visible, nothing drawn, voice playing): a hung renderer, a lost GPU
+  // process or a page that stopped beating gets reloaded (at most 5 times a minute)
+  let lastBeat = Date.now(), reloads = [];
+  const reviveSphere = why => {
+    const now = Date.now(); reloads = reloads.filter(t => now - t < 60000); if (reloads.length >= 5 || !win || win.isDestroyed()) return;
+    reloads.push(now); lastBeat = now; try { fs.appendFileSync(path.join(app.getPath('userData'), 'theseus.log'), `${new Date().toISOString().slice(0, 19)} sphere ${why}: reloading
+`); } catch {} win.webContents.reload();
+  };
+  ipcMain.on('beat', e => { if (win && !win.isDestroyed() && e.sender === win.webContents) lastBeat = Date.now(); });
+  win.on('unresponsive', () => reviveSphere('unresponsive'));
+  app.on('child-process-gone', (_e, d) => { if (d.type === 'GPU' && d.reason !== 'clean-exit') setTimeout(() => reviveSphere('GPU process gone'), 1500); });
+  setInterval(() => { if (win && !win.isDestroyed() && !win.webContents.isLoading() && Date.now() - lastBeat > 40000) reviveSphere('no heartbeat'); }, 10000);
 }
 
 // Start with Windows: unpackaged, the login item must run electron.exe with this app's folder (and the feed path, if one is set)
 function setAutostart() {
   if (process.env.SPHERE_USERDATA) return;   // a test instance never touches the real login item (it would drop it)
-  const o = { openAtLogin: !!settings.autostart, name: 'Theseus' };
+  const o = { openAtLogin: !!settings.autostart, name: CHANNEL === 'test' ? 'Theseus Test' : 'Theseus' };   // (the test build's own entry: never the release's)
   if (!app.isPackaged) { o.path = process.execPath; o.args = [app.getAppPath()]; }
   app.setLoginItemSettings(o);
   // renamed from Session Sphere (user 10-9, installer 10-10): drop the old Run entry so it does not start twice
-  app.setLoginItemSettings({ ...o, openAtLogin: false, name: 'Session Sphere' });
+  if (CHANNEL !== 'test') app.setLoginItemSettings({ ...o, openAtLogin: false, name: 'Session Sphere' });
+}
+// Demo video (tools/demo): SPHERE_DEMO=<steps.json> plays timed steps on the sphere window with no real mouse, test runs only
+// (needs SPHERE_USERDATA). Steps: { t: ms after the window shows, then one of: mode (writes SPHERE_MODE_FILE), spread, fold, intro,
+// outro, feed (file copied over SPHERE_FEED), ask: { q, text } (a fixed reply on the Ask card), caption }.
+function demoRun() {
+  let steps = []; try { steps = JSON.parse(fs.readFileSync(process.env.SPHERE_DEMO, 'utf8')); } catch (e) { return console.log('demo: ' + e.message); }
+  // the capture shows a window with no page background as grey until the first spread, then black (and the core's halo as a hard ring): an opaque page grey keeps it the same all through
+  win.webContents.insertCSS('html,body{background:#272727!important}').catch(() => {});
+  for (const st of steps) setTimeout(() => {
+    try {
+      if (st.mode && process.env.SPHERE_MODE_FILE) { fs.writeFileSync(process.env.SPHERE_MODE_FILE, JSON.stringify({ mode: st.mode })); win.webContents.send('voice-open', { demoMode: true }); }
+      if (st.spread) { win.webContents.send('voice-open', { spread: true }); }
+      if (st.fold) win.webContents.send('voice-open', { fold: true });
+      if ('swapCard' in st) { demoCard = st.swapCard; if (demoCard && demoCard.card.endsInMs) demoCard.card.endsAt = Date.now() + demoCard.card.endsInMs; if (demoFeedOut) demoFeedOut(); }
+      if (st.talk) {   // the narration: the voice-following glow from the line's envelope (kokoro_speak.py --env), like a real spoken line
+        let e = {}; try { e = JSON.parse(fs.readFileSync(st.talk.env, 'utf8')); } catch {}
+        win.webContents.send('talking', { on: true, start: Date.now(), step: e.step || 20, env: e.env || null, text: '' });
+        setTimeout(() => { if (!win.isDestroyed()) win.webContents.send('talking', { on: false }); }, st.talk.ms);
+      }
+      if (st.intro) playIntro();
+      if (st.outro) playOutro();
+      if (st.feed && process.env.SPHERE_FEED) fs.copyFileSync(st.feed, process.env.SPHERE_FEED);
+      if (st.askOff) win.webContents.send('ask', { off: true });
+      if (st.ask) win.webContents.send('ask', { state: st.ask.state || 'answer', q: st.ask.q, text: st.ask.text, spoken: false });
+      if (st.caption) win.webContents.send('ask', { state: 'answer', q: '', text: st.caption, spoken: false });
+      console.log('demo step ' + JSON.stringify(st).slice(0, 120));
+    } catch (e) { console.log('demo step failed: ' + e.message); }
+  }, st.t || 0);
 }
 // test pictures of the sphere window itself, even under other windows: SPHERE_SHOTS="<dir>;<count>;<ms apart>[;<first after ms, 8000>]"
-if (process.env.SPHERE_SHOTS) app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+if (process.env.SPHERE_SHOTS || process.env.SPHERE_PERF) app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 function testShots() {
   const [dir, count = 1, ms = 500, first = 8000] = process.env.SPHERE_SHOTS.split(";");
   win.webContents.setBackgroundThrottling(false);
@@ -363,31 +605,39 @@ function testShots() {
   const take = async () => {
     if (win.isDestroyed() || i >= +count) return;
     const img = await win.webContents.capturePage();
-    fs.writeFileSync(path.join(dir, `shot_${String(++i).padStart(2, '0')}.png`), img.toPNG());
+    const n = String(++i).padStart(2, '0'); fs.writeFileSync(path.join(dir, `shot_${n}.png`), img.toPNG());
+    if (alive(bgWin) && bgWin.isVisible()) bgWin.webContents.capturePage().then(b => fs.writeFileSync(path.join(dir, `bg_${n}.png`), b.resize({ width: 480 }).toPNG()), () => {});   // the background too (Lightfall's squeeze)
     setTimeout(take, +ms);
   };
   setTimeout(take, +first);
+  // SPHERE_FX=<ms>: a close animation (the closeFx setting) that long after the window shows, for the test pictures
+  if (process.env.SPHERE_FX) setTimeout(() => playOutro(), +process.env.SPHERE_FX);
+  // SPHERE_BACKLOG=<ms>: open the backlog card that long after the window shows (as Settings' Open the backlog)
+  if (process.env.SPHERE_BACKLOG) setTimeout(() => win.webContents.send('backlog-open'), +process.env.SPHERE_BACKLOG);
+  // SPHERE_DIGEST=<ms>: the digest card of the last 24 hours that long after the window shows
+  if (process.env.SPHERE_DIGEST) setTimeout(() => auto.digest(lastFeed.sessions || [], 24).then(d => win.webContents.send('digest', d)), +process.env.SPHERE_DIGEST);
+  if (process.env.SPHERE_QUIT) setTimeout(() => { console.log('quit asked', Date.now()); app.quit(); }, +process.env.SPHERE_QUIT);   // quit timing test
 }
 // one sphere at a time: a second start (autostart + a manual launch) quits at once and does nothing else (no settings, no voice)
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 // started again (the pinned icon, the Start menu): the running copy shows its sphere if it was hidden
-app.on('second-instance', () => { if (win && !win.isDestroyed() && !win.isVisible()) { win.showInactive(); sendToBottom(); syncBg(); } });
+app.on('second-instance', () => showSphere());
 // the pages' titles say Theseus: every window shows the assistant's name instead
 app.on('browser-window-created', (_e, w) => w.on('page-title-updated', (ev, t) => { ev.preventDefault(); w.setTitle(t.replace(/^Theseus\b/, NAME())); }));
 if (gotLock) app.whenReady().then(() => {
   zorder.send({ cmd: 'ping' });                // warm the z-order helper before the window needs it
   loadSettings(); setAutostart();            // keeps the login item in step with the setting (and with this folder)
-  createWindow();
+  createWindow(); perfProbe();
   if (!settings.setupDone) setTimeout(() => openSettings('setup'), 2000);   // a fresh install: the setup card
   const trayIcon = require('./trayicon'); let trayHex = null;   // assets/tray_base + mode-coloured core + tray_top (tools/make_icon.js)
   const coreHex = m => (!settings.coreFollowsMode || !m || m === 'normal') ? settings.glow : (settings.modeColors[m] || settings.glow);
   const icon = trayIcon(trayHex = coreHex(null));
   tray = new Tray(icon);
-  tray.setToolTip(NAME());
+  tray.setToolTip(NAME() + (CHANNEL === 'test' ? ' (test build)' : ''));
   const rebuild = () => tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Settings…', click: () => openSettings() },
-    { label: 'Show / hide', click: () => { if (!win || win.isDestroyed()) return; if (win.isVisible()) win.hide(); else { win.showInactive(); sendToBottom(); } syncBg(); } },
+    { label: 'Show / hide', click: () => { if (!win || win.isDestroyed()) return; if (win.isVisible()) hideSphere(); else showSphere(); } },
     { label: 'Left half', type: 'radio', checked: settings.side === 'left', click: () => { settings.side = 'left'; saveSettings(); win.setBounds(halfBounds()); pushSettings(); } },
     { label: 'Right half', type: 'radio', checked: settings.side === 'right', click: () => { settings.side = 'right'; saveSettings(); win.setBounds(halfBounds()); pushSettings(); } },
     { label: 'Full screen', type: 'radio', checked: settings.side === 'full', click: () => { settings.side = 'full'; saveSettings(); win.setBounds(halfBounds()); pushSettings(); } },
@@ -438,7 +688,9 @@ if (gotLock) app.whenReady().then(() => {
   // Theseus mode: current = editor_limits.json .mode; a change is a request the Session manager's watcher picks up
   const MODES = ['normal', 'worker', 'night', 'weekend', 'performance', 'efficiency'];
   // weekend is written as { mode: 'night', weekend: true } (the Session manager's weekend-mode skill; ModeButtons reads it the same way)
-  const readMode = f => { if (!P.modeDir()) return null; try { const j = JSON.parse(fs.readFileSync(path.join(P.modeDir(), f), 'utf8').replace(/^\uFEFF/, '')); return (j.weekend ? 'weekend' : j.mode) || null; } catch { return null; } };
+  // a half-written or locked file keeps the last mode read (no flicker to "no mode" and back); only a missing file is none
+  const modeSeen = {};
+  const readMode = f => { if (!P.modeDir()) return null; try { const j = JSON.parse(fs.readFileSync(path.join(P.modeDir(), f), 'utf8').replace(/^\uFEFF/, '')); return modeSeen[f] = (j.weekend ? 'weekend' : j.mode) || null; } catch (e) { return e && e.code === 'ENOENT' ? (modeSeen[f] = null) : modeSeen[f] ?? null; } };
   // SPHERE_MODE_FILE (tests): a scratch {"mode": ...} file stands in for the real mode, so the core can be checked per mode
   function getMode() {
     if (mgr && settings.manageOn && settings.manageModes) return { mode: mgr.mode(), pending: null };   // Theseus keeps the mode itself
@@ -448,7 +700,26 @@ if (gotLock) app.whenReady().then(() => {
   }
   ipcMain.handle('mode', e => fromUi(e) ? getMode() : null);
   ipcMain.handle('set-mode', (e, m) => fromUi(e) ? requestMode(m) : null);
+  // the Theseus mod's state (SessionRules_Spec): mode, quiet hours, manager session and switches, rewritten when one changes
+  function rulesStateOf() {
+    const mode = getMode().mode || 'normal', wk = mode === 'weekend';
+    if (mode !== rulesMode.mode) rulesMode = { mode, since: rulesMode.mode ? Date.now() : null };   // (unknown at start)
+    const quiet = wk ? [settings.weekendFrom, settings.weekendTo] : [settings.nightFrom, settings.nightTo];
+    // The manager writes its own id file on every swap; the feed can still list old (archived) managers first
+    let managerId = null;
+    if (P.feed()) try { managerId = fs.readFileSync(path.join(path.dirname(P.feed()), 'session_manager_id.txt'), 'utf8').trim().split(/\s/)[0] || null; } catch {}
+    if (!managerId) {
+      const m = rawFeed && Array.isArray(rawFeed.sessions) && rawFeed.sessions.find(s => s.group === 'Session Manager' && !s.archived && !/\(old\b/i.test(s.title || ''));
+      managerId = m ? m.sessionId : null;
+    }
+    const ud = app.getPath('userData');   // Theseus's own files: written only by Theseus (the mod refuses other sessions)
+    return { rules: settings.sessionRules, mode, modeSince: rulesMode.since, quietStart: quiet[0], quietEnd: quiet[1], managerId, critical: [],
+      stateFiles: ['settings.json', 'manage.json', 'rules.json', 'sessionrules.json', path.join('mod', 'state.json')].map(f => path.join(ud, f)) };
+  }
+  let rulesMode = { mode: null, since: null };
+  function rulesState() { if (srules && srules.installed()) srules.writeState(rulesStateOf()); }
   function requestMode(m) {
+    setTimeout(rulesState, 500);
     if (mgr && settings.manageOn && settings.manageModes) { if (MODES.includes(m)) mgr.setMode(m); return getMode(); }
     // a test instance (own user folder or scratch mode file) never asks Theseus for a real mode change
     if (process.env.SPHERE_MODE_FILE || process.env.SPHERE_USERDATA) {
@@ -465,10 +736,19 @@ if (gotLock) app.whenReady().then(() => {
     }
     return getMode();
   }
+  // Theseus keeps the mode itself (manageModes): its schedule change still goes to the Session manager as a mode_request,
+  // whose /<mode>-mode skill writes editor_limits.json (10-14: the 6:30 AM switch to normal reached no one; the hooks,
+  // focus and swap rules read editor_limits.json and stayed in night mode until 9 AM)
+  function modeToManager(m) {
+    if (!MODES.includes(m) || process.env.SPHERE_MODE_FILE || process.env.SPHERE_USERDATA || !P.modeDir()) return;
+    if (m === readMode('editor_limits.json') && !readMode('mode_request.json')) return;
+    const f = path.join(P.modeDir(), 'mode_request.json'), at = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+    try { fs.writeFileSync(f + '.tmp', JSON.stringify({ mode: m, at, by: 'theseus schedule' })); fs.renameSync(f + '.tmp', f); log(`mode ${m}: mode_request.json for the Session manager`); } catch (e) { log(`mode ${m}: could not write mode_request.json: ${e && e.message}`); }
+  }
   ipcMain.handle('displays', e => (fromWin(e) || fromSettings(e)) ? screen.getAllDisplays().map((d, i) => ({ id: String(d.id), label: `Monitor ${i + 1} (${d.size.width}x${d.size.height})` })) : []);
   ipcMain.handle('set-settings', (e, patch) => {
-    if (!(fromWin(e) || fromSettings(e))) return settings;
-    patch = clean(patch);
+    if (!(fromWin(e) || fromSettings(e))) return uiSettings();
+    patch = clean(patch); delete patch.echoTokenEnc; delete patch.echoHost; delete patch.echoPublicHost;   // set by main only
     const moved = 'side' in patch || 'display' in patch;
     settings = merge(settings, patch); saveSettings();
     if (moved && win && !win.isDestroyed()) win.setBounds(halfBounds());
@@ -476,7 +756,7 @@ if (gotLock) app.whenReady().then(() => {
     if ('voice' in patch || 'voiceSpeed' in patch) writeVoice();
     if ('autostart' in patch) setAutostart();
     if (patch.claudeTray === true) hideClaude();
-    if ('name' in patch && tray) tray.setToolTip(NAME());
+    if ('name' in patch && tray) tray.setToolTip(NAME() + (CHANNEL === 'test' ? ' (test build)' : ''));
     if ('name' in patch) for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setTitle(w.webContents.getTitle().replace(/^Theseus\b/, NAME()));
     pushSettings(); onSettingsChanged(patch);
     rebuild();
@@ -512,7 +792,8 @@ if (gotLock) app.whenReady().then(() => {
     if (!fromWin(e) || !a || ![a.x, a.y, a.r].every(v => typeof v === 'number' && isFinite(v)) || a.r <= 0 || a.r > 20000) return;
     circle = { x: a.x, y: a.y, r: a.r };
   });
-  function setOccluded(v) { if (v === occluded) return; occluded = v; if (process.env.SPHERE_DEBUG) console.log('occluded', v); if (win && !win.isDestroyed()) win.webContents.send('occluded', v); }
+  function setOccluded(v) { if (process.env.SPHERE_PERF_VISIBLE) v = false;   // performance tests: always the uncovered (busier) case
+    if (v === occluded) return; occluded = v; if (process.env.SPHERE_DEBUG) console.log('occluded', v); if (win && !win.isDestroyed()) win.webContents.send('occluded', v); }
   setInterval(async () => {
     if (occBusy || !circle || frontOn || !win || win.isDestroyed() || !win.isVisible()) return;
     occBusy = true;
@@ -669,9 +950,24 @@ if (gotLock) app.whenReady().then(() => {
   // sessions started from the console (console-new) before the feed lists them: 'new:<uuid>' -> { file, title }
   const newOnes = new Map();
   // sessionId -> { sessionId, title, link } from the feed, or a new: session
+  // a session the feed has dropped: the app's own metadata file (10-14: the Session manager and the Mailer were missing from
+  // the feed for hours, so every outbox send to them failed 'unknown session')
+  function metaSess(sessionId) {
+    if (!/^local_[\w-]{8,80}$/.test(sessionId)) return null;
+    const root = path.join(process.env.APPDATA || '', 'Claude', 'claude-code-sessions');
+    try {
+      for (const a of fs.readdirSync(root)) for (const b of fs.readdirSync(path.join(root, a))) {
+        const f = path.join(root, a, b, sessionId + '.json'); if (!fs.existsSync(f)) continue;
+        const m = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, ''));
+        if (m.isArchived) return null;
+        return { sessionId, title: String(m.title || sessionId), cwd: m.cwd, cliSessionId: m.cliSessionId, link: `claude://claude.ai/epitaxy/${sessionId}`, fromMeta: true };
+      }
+    } catch {}
+    return null;
+  }
   function sessFor(sessionId) {
     const s = (lastFeed.sessions || []).find(x => x.sessionId === sessionId); if (s) return s;
-    const n = newOnes.get(sessionId); if (!n) return null;
+    const n = newOnes.get(sessionId); if (!n) return metaSess(sessionId);
     // the app had not named it yet when it started: the feed's entry with the same transcript has the name
     if (!n.title) {
       const f = feedSessions().find(x => typeof x.transcript === 'string' && path.basename(x.transcript) === path.basename(n.file));
@@ -698,7 +994,7 @@ if (gotLock) app.whenReady().then(() => {
   let stressAt = null;
   function stressFile() {
     if (stressAt) return stressAt;
-    const d = path.join(app.getPath('temp'), 'SessionSphere'); fs.mkdirSync(d, { recursive: true });
+    const d = path.join(app.getPath('temp'), 'Theseus'); fs.mkdirSync(d, { recursive: true });
     stressAt = path.join(d, 'stress_' + process.pid + '.jsonl'); fs.writeFileSync(stressAt, '');
     let n = 0;
     const line = o => fs.appendFileSync(stressAt, JSON.stringify({ ...o, uuid: 'st' + n, timestamp: new Date().toISOString() }) + '\n');
@@ -720,7 +1016,18 @@ if (gotLock) app.whenReady().then(() => {
     const file = require('./appsessions').live(sessionId, (feedSessions().find(x => String(x.sessionId) === sessionId) || {}).transcript);
     const mv = moved.get(sessionId);
     if (mv) { if (born(mv) < 0) moved.delete(sessionId); else if (!(typeof file === 'string' && born(file) >= born(mv))) return mv; else moved.delete(sessionId); }
-    return typeof file === 'string' && /\.jsonl$/i.test(file) && fs.existsSync(file) ? file : null;
+    if (typeof file === 'string' && /\.jsonl$/i.test(file) && fs.existsSync(file)) return file;
+    return byId(sessionId);
+  }
+  // a feed entry named by its transcript id with no path (the manager's feed lists a brand-new session this way): find <id>.jsonl
+  // in the transcript folders (found once per id; a miss is tried again after a minute)
+  const byIdSeen = new Map();
+  function byId(id) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id))) return null;
+    const c = byIdSeen.get(id); if (c && (c.file ? fs.existsSync(c.file) : Date.now() - c.at < 60e3)) return c.file;
+    let file = null;
+    try { const root = P.transcripts(); for (const d of fs.readdirSync(root)) { const f = path.join(root, d, id + '.jsonl'); if (fs.existsSync(f)) { file = f; break; } } } catch {}
+    byIdSeen.set(id, { file, at: Date.now() }); return file;
   }
   // has a user line starting like `text` been written to the transcript since byte `from`? (polls up to 6 s)
   async function landed(file, from, text) {
@@ -744,14 +1051,33 @@ if (gotLock) app.whenReady().then(() => {
     return false;
   }
   // type `text` into the session in the Claude app and press Send (text null = press Stop); one at a time. -> { ok, why }
-  function sessionSend(sessionId, text) {
+  // bg: an automatic send (swaps, outbox, autonomy, session messages): never while Claude is in front and no deep link (10-14: those
+  // raised the app and switched its page for minutes, mostly on renamed sessions: 48 of 106 sends were 'session not found')
+  function sessionSend(sessionId, text, bg) {
     const run = async () => {
       const s = sessFor(sessionId), no = refuse(s); if (no) return no;
       const file = transcriptOf(sessionId), from = file ? sizeOf(file) : 0;
+      // McpSends (Titans spec): a background send goes through the Mailer session (app send_message, no UI) when it is up
+      if (bg && text !== null) {
+        const m = await mailer.send(sessionId, text, false);
+        if (m.ok) {
+          log(`mailer send "${s.title}": ok`);
+          if (file && !(await landed(file, from, text))) return { ok: false, why: 'sent, but it has not shown up in the session yet' };
+          return { ok: true };
+        }
+        if (!m.down) { log(`mailer send "${s.title}": ${m.why}`); return { ok: false, why: 'mailer: ' + m.why }; }   // handed over: a UI send could double it
+        // user 10-14: background sends never drive the window (a UI send raised Claude over the user's work); the caller retries
+        // later or hands it to the manager (clear_swap_auto one-shot = MCP send_message)
+        if (!(settings && settings.bgUiSends)) { log(`no bg send "${s.title}": Mailer down (${m.why})`); return { ok: false, why: 'Mailer down; no background UI sends' }; }
+        log(`ui fallback "${s.title}": ${m.why}`);
+      }
       const cmd = { cmd: 'send', title: s.title, link: linkOf(s) };
       if (text === null) cmd.stop = true; else cmd.text = text;
+      if (bg) cmd.bg = true;
       const r = await claudeUi.send(cmd, 30000);
       log(`console ${text === null ? 'stop' : 'send'} "${s.title}": ${r.ok ? 'ok' : r.why}`);
+      // a helper killed for taking too long may have pressed Send already: the transcript says (never send it twice)
+      if (!r.ok && r.why === 'timeout' && text !== null && file && await landed(file, from, text)) { log(`console send "${s.title}": landed despite the timeout`); return { ok: true }; }
       if (!r.ok || text === null) return { ok: !!r.ok, why: r.why };
       if (rewound.has(sessionId) && Date.now() - rewound.get(sessionId).at > 15 * 60000) rewound.delete(sessionId);   // stale (undone in the app, or never continued)
       if (rewound.has(sessionId)) return followRewind(sessionId, text);
@@ -786,10 +1112,11 @@ if (gotLock) app.whenReady().then(() => {
     for (let i = 0; i < 20; i++) {
       await new Promise(r => setTimeout(r, 500));
       let names = []; try { names = fs.readdirSync(rw.dir).filter(f => f.endsWith('.jsonl')); } catch {}
-      for (const f of names) {
-        const p = path.join(rw.dir, f); let st; try { st = fs.statSync(p); } catch { continue; }
-        if (st.birthtimeMs < rw.at - 2000) continue;
-        if (!readSpan(p, 0, 1 << 20, true).includes(key)) continue;
+      // no text to look for (pictures only): only a single new transcript can be this one, never a guess between several
+      const born = names.filter(f => { try { return fs.statSync(path.join(rw.dir, f)).birthtimeMs >= rw.at - 2000; } catch { return false; } });
+      for (const f of key ? born : born.length === 1 ? born : []) {
+        const p = path.join(rw.dir, f);
+        if (key && !readSpan(p, 0, 1 << 20, true).includes(key)) continue;
         rewound.delete(sessionId); moved.set(sessionId, p); if (mgr) mgr.moved(sessionId, p);
         log(`console rewind: "${(sessFor(sessionId) || {}).title}" continues in ${f}`);
         if (conId === sessionId && win && !win.isDestroyed()) {   // the open console reads the new file from the start
@@ -864,12 +1191,13 @@ if (gotLock) app.whenReady().then(() => {
     return (sendQ = sendQ.then(run, run));
   }
   // plan approval: choice accept | auto | revise (text) | reject; confirmed by the transcript, as answers are -> { ok, why }
-  function sessionPlan(sessionId, choice, text) {
+  function sessionPlan(sessionId, choice, text, id) {   // id: only that plan (a voice confirm read one out)
     const run = async () => {
       const s = sessFor(sessionId), no = refuse(s); if (no) return no;
       const file = transcriptOf(sessionId); if (!file) return { ok: false, why: 'no transcript for this session' };
       const p = pendingNow(file);
       if (!p || p.kind !== 'plan') return { ok: false, why: 'it is not waiting on a plan now' };
+      if (id && p.id !== id) return { ok: false, why: 'that plan is no longer waiting' };
       if (choice === 'revise' && !String(text || '').trim()) return { ok: false, why: 'say what to change' };
       const from = sizeOf(file);
       const r = await claudeUi.send({ cmd: 'plan', title: s.title, link: linkOf(s), choice, text: String(text || '') }, 30000);
@@ -952,7 +1280,7 @@ if (gotLock) app.whenReady().then(() => {
   function sessionAttach(sessionId, paths, pngs, text) {
     const run = async () => {
       const s = sessFor(sessionId), no = refuse(s); if (no) return no;
-      const dir = path.join(app.getPath('temp'), 'SessionSphere'), tmp = [];
+      const dir = path.join(app.getPath('temp'), 'Theseus'), tmp = [];
       try { fs.mkdirSync(dir, { recursive: true }); pngs.forEach((b, i) => { const f = path.join(dir, `paste_${Date.now()}_${i}.png`); fs.writeFileSync(f, b); tmp.push(f); }); } catch (e) { return { ok: false, why: 'cannot save the pasted image' }; }
       const file = transcriptOf(sessionId), from = file ? sizeOf(file) : 0;
       const r = await claudeUi.send({ cmd: 'attach', title: s.title, link: linkOf(s), files: [...paths, ...tmp], text }, 60000);
@@ -1081,17 +1409,22 @@ if (gotLock) app.whenReady().then(() => {
     if (!win || win.isDestroyed()) return;
     const v = feedView(); if (v) win.webContents.send('feed', v);
   }
+  demoFeedOut = feedOut;
   // the feed with the main process's marks: waiting on a permission, background tasks, a draft, a session asking for you
   function feedView() {
     const f = lastFeed; if (!f || !Array.isArray(f.sessions)) return f;
     const more = s => {
       let o = s; if (awaiting.get(s.sessionId) === true && s.activity !== 'waiting') o = { ...o, activity: 'waiting' };
+      const pj = projects.projectOf(s.cwd); if (pj) o = { ...o, project: pj };
       const b = bgOf.get(String(s.sessionId)); if (b) o = { ...o, bg: b };
       if (drafts[String(s.sessionId)]) o = { ...o, draft: true };
       const at = attn.get(String(s.sessionId)); if (at) o = { ...o, activity: 'waiting', note: at.note };
+      if (demoCard && s.title === demoCard.title) o = { ...o, swapCard: demoCard.card };
+      const rc = revOn.get(String(s.sessionId)); if (rc && !o.swapCard) o = { ...o, swapCard: { kind: 'review', text: rc.text, branch: rc.branch } };   // a swap card goes first
       return o;
     };
-    return awaiting.size || bgOf.size || attn.size || Object.keys(drafts).length ? { ...f, sessions: f.sessions.map(more) } : f;
+    const bl = auto ? auto.backlog.tiles() : [];   // the backlog's waiting tasks: dim queued tiles (Autonomy part 3)
+    return demoCard || awaiting.size || bgOf.size || attn.size || revOn.size || bl.length || Object.keys(drafts).length ? { ...f, sessions: [...f.sessions.map(more), ...bl] } : f;
   }
   const conStop = () => { if (conRd) conRd.close(); conRd = conId = null; };
   const SID = /^(new:)?[\w-]{1,80}$/;
@@ -1337,6 +1670,40 @@ if (gotLock) app.whenReady().then(() => {
     if (!fromWin(e) || typeof folder !== 'string' || !folders().includes(folder) || (model != null && !MODELS.includes(model)) || typeof text !== 'string' || !text.trim() || text.length > 20000) return { ok: false, why: 'bad request' };
     return sessionNew(folder, model || null, text.trim(), !!worktree);
   });
+  // Project creator (ProjectCreator_Spec.md): the New project window -> config entry + folder + checkpoint, then the manager session
+  let projWin = null;
+  const fromProj = e => !!projWin && !projWin.isDestroyed() && e.sender === projWin.webContents;
+  ipcMain.on('open-new-project', e => {
+    if (!fromWin(e) && !fromSettings(e)) return;
+    if (projWin && !projWin.isDestroyed()) { projWin.show(); projWin.focus(); return; }
+    projWin = new BrowserWindow({ width: 440, height: 330, title: NAME() + ': New project', icon: path.join(__dirname, '..', 'assets', 'icon.png'), backgroundColor: '#121211', autoHideMenuBar: true, resizable: false,
+      webPreferences: { preload: path.join(__dirname, 'preload.js') } });
+    const w = projWin; w.on('closed', () => { if (projWin === w) projWin = null; });
+    w.loadFile(path.join(__dirname, 'renderer', 'newproject.html'));
+  });
+  ipcMain.handle('project-pick', async e => {
+    if (!fromProj(e)) return null;
+    const r = await dialog.showOpenDialog(projWin, { properties: ['openDirectory', 'createDirectory'], defaultPath: PP.projects });
+    return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
+  });
+  // shared by the New project window and the voice/Ask tool: config entry + folder + checkpoint, then the manager session
+  async function createProject(name, folder, resume) {
+    if (!settings.appControl) return { ok: false, why: 'App control is off (Session Management): the manager session cannot be started.' };
+    const c = projects.create(name, folder, !!resume); if (!c.ok) return c;
+    let r; try { r = await sessionNew(c.entry.cwd, 'Sonnet 5.5', projects.promptFor(c.entry), false); } catch (x) { r = { ok: false, why: x.message }; }
+    log(`project creator: ${c.entry.project} (${(c.made || []).join(', ') || 'resumed'}) manager ${r.ok ? 'started' : 'not started: ' + r.why}`);
+    if (!r.ok) return { ok: false, retry: true, why: `Created (${c.made.join(', ') || 'already there'}), but the manager did not start: ${r.why}. Create it again to retry.` };
+    openStarted(r); return { ok: true, made: c.made, title: c.entry.managerTitle };
+  }
+  // test hook (needs SPHERE_USERDATA): SPHERE_TEST_PROJECT="Name|C:\folder" creates that project once the window is up and logs the result
+  if (process.env.SPHERE_TEST_PROJECT && process.env.SPHERE_USERDATA) setTimeout(() => {
+    const [n, f] = process.env.SPHERE_TEST_PROJECT.split('|');
+    createProject(n, f, true).then(r => log('TEST project: ' + JSON.stringify(r)), x => log('TEST project threw: ' + x.message));
+  }, 9000);
+  ipcMain.handle('project-create', (e, name, folder, resume) => {
+    if (!fromProj(e) || typeof name !== 'string' || typeof folder !== 'string') return { ok: false, why: 'bad request' };
+    return createProject(name, folder, resume);
+  });
   ipcMain.handle('console-close', e => { if (fromWin(e)) conStop(); });
   ipcMain.handle('console-send', (e, sessionId, text) => {
     if (!fromWin(e) || typeof sessionId !== 'string' || !SID.test(sessionId) || typeof text !== 'string' || !text.trim() || text.length > 20000) return { ok: false, why: 'bad request' };
@@ -1389,13 +1756,17 @@ if (gotLock) app.whenReady().then(() => {
     quitting = true; flushSettings();
     const stop = () => { theseusStop(); claudeUi.stop(); zorder.stop(); if (builtin) builtin.dispose(); };
     const recBusy = !!(rec && rState && (rState.recording || rState.replay));
-    if (!overlay && !recBusy) return stop();
+    const fx = !!(win && !win.isDestroyed() && win.isVisible() && fxKind('closeFx') !== 'off');
+    if (!overlay && !recBusy && !fx) return stop();
     e.preventDefault();
+    // the close animation: the small windows go first (the Claude window is put back meanwhile)
+    let fxDone = null;
+    if (fx) { for (const w of [stripWin, toastWin, mask]) if (w && !w.isDestroyed()) w.hide(); fxDone = playOutro(); }
     const cap = ms => new Promise(r => setTimeout(r, ms));
     const back = overlay ? Promise.race([claudeUi.send({ cmd: 'restore', hide: overlay.hidden || settings.claudeTray }, 3000), cap(3000)]) : null;
     // a recording is ended cleanly and saved as .mp4, the replay ring stopped and cleared (up to 20 s; else the .mkv is kept)
     const recDone = recBusy ? Promise.race([Promise.allSettled([rState.recording && rec.stop(), rState.replay && rec.setReplay(false)]), cap(20000)]) : null;
-    Promise.allSettled([back, recDone]).finally(() => { stop(); app.quit(); });
+    Promise.allSettled([back, recDone, fxDone]).finally(() => { stop(); app.quit(); });
   });
   // ================= Theseus tools: audio, recorder, strip, hotkeys, readout, voice commands (src/audio.js and src/recorder.js are optional) =================
   const logFile = path.join(app.getPath('userData'), 'theseus.log');
@@ -1413,8 +1784,12 @@ if (gotLock) app.whenReady().then(() => {
     rec = require(modPath('recorder')).create({ ffmpeg: P.ffmpeg, tmpDir, prefix: () => settings.recPrefix || NAME() });
   } catch (e) { log('recorder module not available: ' + (e && e.message)); }
   let aState = null, rState = null, sysSum = null, listening = false, curMode = { mode: null, pending: null };
+  // Focus (Focus_Spec): the shared focus_state.json and the clear-swap outbox; the strip button shows it
+  const focus = require('./focus').create({ log, send: (id, text) => sessionSend(id, text, true),
+    changed: (s, why) => { pushTools(); if (why === 'ended') vCap('', 'Focus ended.'); } });
+  focus.start();
   const snapshot = () => ({
-    audio: aState, rec: rState || (rec ? { recording: false, since: null, file: null, replay: false, replaySec: settings.replaySec } : null), sys: settings.sysReadout ? sysSum : null,
+    focus: focus.state(), audio: aState, rec: rState || (rec ? { recording: false, since: null, file: null, replay: false, replaySec: settings.replaySec } : null), sys: settings.sysReadout ? sysSum : null,
     mode: curMode, listening, avail: { audio: !!audio, rec: !!rec }, keys: { failed: hk ? hk.failed() : [] },
   });
   let pushT = null;
@@ -1580,6 +1955,16 @@ if (gotLock) app.whenReady().then(() => {
 
   // ---- menus (native popups; the strip and the tray share them) ----
   const popup = (tpl, pos) => { const m = Menu.buildFromTemplate(tpl); m.popup(alive(stripWin) && pos && stripVisible() ? { window: stripWin, x: Math.round(pos.x), y: Math.round(pos.y) } : {}); };
+  // Focus menu: presets while off; Extend / Turn off while on; "Until a time..." opens its Settings row (the time picker)
+  const hhmm = iso => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const focusItems = () => {
+    const s = focus.state(), on = (u, lv) => () => act('focusSet', { until: u == null ? null : Date.now() + u, level: lv });
+    if (s.on) return [{ label: `Focus on${s.until ? ' till ' + hhmm(s.until) : ''} (${s.level || 'custom'})`, enabled: false },
+      { label: 'Extend 30 min', click: () => act('focusSet', { extend: 30 * 60e3 }) }, { label: 'Extend 1 h', click: () => act('focusSet', { extend: 3600e3 }) },
+      { label: 'Until a time...', click: () => openSettings('focus') }, { type: 'separator' }, { label: 'Turn off', click: () => act('focusSet', { off: true }) }];
+    return [{ label: '30 min', click: on(30 * 60e3) }, { label: '1 h', click: on(3600e3) }, { label: '2 h', click: on(2 * 3600e3) },
+      { label: 'Until a time...', click: () => openSettings('focus') }, { label: 'Until I turn it off', click: on(null) }];
+  };
   const modeItems = () => MODES.map(m => ({ label: T.MODE_NAMES[m], type: 'radio', checked: (curMode.pending || curMode.mode) === m, click: () => setModeNotice(m) }));
   function setModeNotice(m) { curMode = requestMode(m); pushTools(); notify('Mode: ' + T.MODE_NAMES[m] + ' requested'); }
   const devItems = kind => {
@@ -1637,10 +2022,10 @@ if (gotLock) app.whenReady().then(() => {
       needR(); if (rState && rState.recording) return;
       const s = await recSource(true); if (!s) return;
       fs.mkdirSync(P.recDir(), { recursive: true });
-      try { await rec.start({ ...s, outDir: P.recDir(), mic: settings.recMic, system: settings.recSystem }); } catch (e) { if (s.source === 'window') recHwnd = null; throw e; }
-      notify('Recording started');
+      let r; try { r = await rec.start({ ...s, outDir: P.recDir(), mic: settings.recMic, system: settings.recSystem }); } catch (e) { if (s.source === 'window') recHwnd = null; throw e; }
+      notify(r && r.stopped ? 'Saved: ' + base(r.file) : 'Recording started', r && r.stopped ? 4000 : undefined);   // (stopped while it was starting)
     },
-    async recStop() { needR(); if (!(rState && rState.recording)) return; const r = await rec.stop(); notify(r && r.file ? 'Saved: ' + base(r.file) : 'Recording stopped', 4000); },
+    async recStop() { needR(); if (!(rState && rState.recording)) return; const r = await rec.stop(); notify(r && r.file ? 'Saved: ' + base(r.file) : r && /starting/.test(r.error || '') ? 'Stopping as soon as it has started' : 'Recording stopped', 4000); },
     async recToggle() { return rState && rState.recording ? acts.recStop() : acts.recStart(); },
     async replayToggle() { needR(); return acts.setReplay(!settings.replay); },
     async setReplay(on) { needR(); settings.replay = !!on; saveSettings(); pushSettings(); applyReplay(); notify(`Replay ${on ? 'on (' + settings.replaySec + ' s)' : 'off'}`); },
@@ -1658,6 +2043,9 @@ if (gotLock) app.whenReady().then(() => {
     async pickWindow() { needR(); const w = await pickWindow(); if (w) { recHwnd = w.hwnd; pushTools(); notify('Window: ' + (w.title || w.exe || '').slice(0, 40)); return { hwnd: w.hwnd, title: w.title }; } return null; },
     async readout() { await showReadout(); },
     'menu-mode'(pos) { popup(modeItems(), pos); },
+    'menu-focus'(pos) { popup(focusItems(), pos); },
+    focusSet(a) { a = a || {}; if (a.off) return focus.set(false); if (a.extend) return focus.extend(+a.extend);
+      return focus.set(true, { until: a.until === undefined ? null : a.until, level: a.level }); },
     'menu-out'(pos) { popup(devItems('out'), pos); },
     'menu-mic'(pos) { popup(devItems('mic'), pos); },
     'menu-rec'(pos) { popup([{ label: 'Source: ' + settings.recSource, enabled: false }, { label: 'Pick region...', enabled: !!rec, click: () => act('pickRegion') }, { label: 'Pick window...', enabled: !!rec, click: () => act('pickWindow') },
@@ -1850,11 +2238,13 @@ if (gotLock) app.whenReady().then(() => {
         if (whole && k !== ws.length) continue;
         let used = k; if (ws[k] === 'session') used++;   // "tell the Geoscape session to …"
         const sc = sim(ws.slice(0, k).join(' '), t) - (old ? 0.001 : 0);
-        const cur = by.get(t); if (!cur || sc > cur.sc) by.set(t, { s, k: used + skip, sc });
+        const cur = by.get(t);
+        if (!cur || sc > cur.sc) by.set(t, { s, k: used + skip, sc });
+        else if (sc === cur.sc && cur.s !== s && !old) cur.amb = true;   // two live sessions with this title: which one is not known
       }
     }
     const r = [...by.values()].sort((a, b) => b.sc - a.sc);
-    return r[0] && r[0].sc >= 0.75 && (!r[1] || r[0].sc - r[1].sc >= 0.08) ? r[0] : null;
+    return r[0] && !r[0].amb && r[0].sc >= 0.75 && (!r[1] || r[0].sc - r[1].sc >= 0.08) ? r[0] : null;
   }
   let vPend = null;   // { kind: 'send' | 'stop', s, text, timer }
   const vCap = (q, t) => toWin('ask', { state: 'answer', q, text: t, spoken: settings.askSpeak });
@@ -1967,11 +2357,11 @@ if (gotLock) app.whenReady().then(() => {
     let what, act;
     if (plan && verb !== 'deny' && !/allow/.test(verb)) {
       const c = verb === 'reject' ? 'reject' : 'accept';
-      what = `${c === 'reject' ? 'Reject' : 'Accept'} the plan of ${s.title}`; act = () => sessionPlan(s.sessionId, c, '');
+      what = `${c === 'reject' ? 'Reject' : 'Accept'} the plan of ${s.title}`; act = () => sessionPlan(s.sessionId, c, '', p.id);   // (pinned to what was read out)
     } else if (perm) {
       const c = verb === 'always allow' ? 'Always allow' : verb === 'deny' || verb === 'reject' ? 'Deny' : 'Allow once';
       what = `${c === 'Allow once' ? 'Allow' : c} ${s.title}: ${p.name}${p.summary ? ' ' + String(p.summary).replace(/^Ran: /, '').slice(0, 80) : ''}`;
-      act = () => sessionPermit(s.sessionId, c);
+      act = () => sessionPermit(s.sessionId, c, p.id);
     } else return { no: plan ? `${s.title} has a plan waiting: say approve or reject.` : `${s.title} is not waiting on ${/allow|deny/.test(verb) ? 'permission' : 'a plan'}.`,
       say: plan ? 'That one has a plan. Say approve or reject.' : 'It is not waiting on that.' };
     return { what, act };
@@ -1979,10 +2369,24 @@ if (gotLock) app.whenReady().then(() => {
   // "[start / open / create …] [a] new session / task / chat [in|for|on <project> [to|that|:] <text>]": with a project and a task it
   // starts at once; without, the New session form opens. The project by its folder name ("my project" = My_Project)
   const NEW_RE = /^(?:(?:start|open|create|make|begin|launch|spin up|add)(?: up)? )?(?:a |an )?(?:(?:new|fresh|another) (?:session|task|chat|conversation|thread)|(?:session|task|chat|conversation))(?: (?:in|for|on) (.+))?$/;
+  // "[create / start / make] [a] new project [called / named] <name>": creates the project's manager (ProjectCreator_Spec); the folder is
+  // <projects dir>/<name>. Like voice sessions it waits 3 s so "cancel" can stop it
+  const PROJ_RE = /^(?:(?:start|create|make|add|set up|spin up|begin)(?: up)? )?(?:a |an )?new project(?: (?:called|named|for))? (.+?)[.!?]*$/i;
+  function voiceProject(text) {
+    const m = String(text).trim().match(PROJ_RE); if (!m) return false;
+    if (!settings.appControl) { vCap(text, 'Creating a project needs App control (Session Management).'); vSay('That needs App control.'); return true; }
+    const name = m[1].replace(/[^\w .-]/g, '').replace(/\s+/g, ' ').trim().replace(/\b\w/g, c => c.toUpperCase()); if (!name) return false;
+    const folder = path.join(PP.projects, name.replace(/ /g, ''));
+    log(`console voice: new project ${name} in ${folder}`);
+    voiceLater(text, `New project "${name}" in ${folder} (creates its manager)`, `New project ${name}.`, () => createProject(name, folder, true).then(r => {
+      vCap('', r.ok ? `Project ${name} created; ${r.title} is starting.` : `Not created: ${r.why}`); vSay(r.ok ? 'Project created.' : "I couldn't create it.");
+    }));
+    return true;
+  }
   function voiceNew(text, n) {
     const m = n.match(NEW_RE); if (!m) return false;
     if (!/^(new|fresh|another|start|open|create|make|begin|launch|spin|add)\b/.test(n)) return false;   // "session" alone is no command
-    if (!settings.appControl) { vCap(text, 'Starting a session needs App control (General settings).'); vSay('That needs App control.'); return true; }
+    if (!settings.appControl) { vCap(text, 'Starting a session needs App control (Session Management).'); vSay('That needs App control.'); return true; }
     if (!m[1]) { voiceForm(text); return true; }
     const ws = m[1].split(' '), fl = folders();
     let best = null;
@@ -2030,7 +2434,7 @@ if (gotLock) app.whenReady().then(() => {
     vCap(text, `No session called "${ws.join(' ')}". Say "open <title>", or "new session in <project>" and the task.`); vSay('I could not find that session.');
     return true;
   }
-  const showWin = () => { if (win && !win.isDestroyed() && !win.isVisible()) { win.showInactive(); sendToBottom(); syncBg(); } };
+  const showWin = () => showSphere();
   // the text of a session's last reply (code blocks and markdown marks out), '' when none
   function lastReply(s) {
     const file = transcriptOf(s.sessionId); let last = null;
@@ -2068,6 +2472,7 @@ if (gotLock) app.whenReady().then(() => {
   // a reply ending in a question) or on a permission (2 s) says so. Changes within 3 s are said together. Not for the session
   // whose card is open, parked ones or the Session manager's own turns; the states found at start are not news
   const alertSt = new Map();   // sessionId -> { act, since, workFrom, worked, said }
+  let echo = null;             // src/echo.js (made further down, with its settings)
   let alertBuf = null;         // { finished: [titles], waiting: [...], permission: [...], timer }
   function alertAct(s) { return awaiting.get(s.sessionId) === true ? 'permission' : s.activity || 'idle'; }
   function alertTrack(f) {
@@ -2095,6 +2500,7 @@ if (gotLock) app.whenReady().then(() => {
       const s = (lastFeed.sessions || []).find(x => x.sessionId === id);
       if (!kind || !s || id === conId) continue;
       if (kind === 'finished' && s.group === 'Session Manager') continue;
+      if (echo && !ECHO_SHELVED) echo.announce(kind, id, String(s.title).replace(/\s*\([^)]*\)\s*$/, '')).catch(e => log('echo: ' + (e && e.message)));   // its own ticks, 20 s per session
       if (!settings[{ finished: 'alertFinished', waiting: 'alertWaiting', permission: 'alertPermission' }[kind]]) continue;
       if (!alertBuf) alertBuf = { finished: [], waiting: [], permission: [], timer: setTimeout(alertSay, 3000) };
       alertBuf[kind].push(String(s.title).replace(/\s*\([^)]*\)\s*$/, ''));
@@ -2121,18 +2527,23 @@ if (gotLock) app.whenReady().then(() => {
     return `${s.title} is idle.${first ? ' Last: ' + first.slice(0, 200) : ''}`;
   }
   function localAnswer(text, ans) { log(`local answer: "${text}" -> ${ans}`); vCap(text, ans); if (settings.askSpeak) say(asker ? asker.spoken(ans) : ans); return true; }
+  const live = () => (lastFeed.sessions || []).filter(s => s.title && s.group !== 'Parked');
+  // "who needs me" and "what is <x> doing": the PC voice and the Echo skill give the same answers
+  function whoNeedsLine() { const w = live().filter(s => ['waiting', 'permission'].includes(alertAct(s))); return w.length ? w.map(stateLine).join(' ') : 'Nobody needs you right now.'; }
+  function whatIsLine(name) {
+    const words = String(name).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+    const f = words.length && findSession(words, true); if (!f) return null;
+    return stateLine(f.s) + (pctOf(f.s) != null ? ` Context ${pctOf(f.s)} percent.` : '');
+  }
   function voiceStatus(text, n) {
-    const live = () => (lastFeed.sessions || []).filter(s => s.title && s.group !== 'Parked');
     const names = l => l.length > 1 ? l.slice(0, -1).join(', ') + ' and ' + l[l.length - 1] : l[0];
     let m;
     if ((m = n.match(/^what (?:is|s) (.+?) (?:doing|up to|working on)$/))) {
-      const f = findSession(m[1].split(' '), true); if (!f) return false;
-      return localAnswer(text, stateLine(f.s) + (pctOf(f.s) != null ? ` Context ${pctOf(f.s)} percent.` : ''));
+      const a = whatIsLine(m[1]); if (!a) return false;
+      return localAnswer(text, a);
     }
-    if (/^(?:(?:which|what) sessions? (?:need|needs|are waiting (?:on|for)) (?:me|you|my attention)|who needs me|(?:does )?any(?:one|body|thing) need me|is anyone waiting(?: on me| for me)?|who is waiting(?: on me| for me)?)$/.test(n)) {
-      const w = live().filter(s => ['waiting', 'permission'].includes(alertAct(s)));
-      return localAnswer(text, w.length ? w.map(stateLine).join(' ') : 'Nobody needs you right now.');
-    }
+    if (/^(?:(?:which|what) sessions? (?:need|needs|are waiting (?:on|for)) (?:me|you|my attention)|who needs me|(?:does )?any(?:one|body|thing) need me|is anyone waiting(?: on me| for me)?|who is waiting(?: on me| for me)?)$/.test(n))
+      return localAnswer(text, whoNeedsLine());
     if ((m = n.match(/^how full is (.+?)(?: s context| context)?$/)) || (m = n.match(/^how much context (?:does|has) (.+?) (?:have |got )?(?:used|left)$/))) {
       const f = findSession(m[1].split(' '), true); if (!f) return false;
       const p = pctOf(f.s);
@@ -2196,9 +2607,10 @@ if (gotLock) app.whenReady().then(() => {
     else if (/^open (?:it |this |that )?in (?:the )?claude(?: app)?$|^show (?:it |this )?in claude$/.test(n)) op = 'claude';
     if (!op) return false;
     const s = conId && sessFor(conId);
+    if (!s && op === 'type') return false;   // "write me a haiku" with no card open is a question for Ask
     if (!s && op !== 'close') { vCap(text, 'No session card is open. Say "open <session>" first.'); vSay('No card is open.'); return true; }
     if (op === 'type' && !arg) return false;
-    if (op === 'send' && !settings.appControl) { vCap(text, 'Sending needs App control (General settings).'); vSay('That needs App control.'); return true; }
+    if (op === 'send' && !settings.appControl) { vCap(text, 'Sending needs App control (Session Management).'); vSay('That needs App control.'); return true; }
     if (op === 'send') setUndo(`the message to ${s.title} (stopped it)`, () => sessionSend(s.sessionId, null));
     showWin(); toWin('voice-card', { op, text: arg });
     log(`console voice: card ${op}${arg ? ' ' + arg : ''}`);
@@ -2207,6 +2619,12 @@ if (gotLock) app.whenReady().then(() => {
   }
   // session management by voice: "park / resume / swap / don't swap <title>", "<title> next" (first in the queue)
   function voiceManage(text, n) {
+    if (/^(?:what s|what is|which sessions are|who s|who is|anything) stuck$/.test(n)) {
+      const ids = auto.stuck(), names = (lastFeed && lastFeed.sessions || []).filter(s => ids.includes(s.sessionId)).map(s => s.title);
+      const a = names.length ? `Stuck: ${names.join(', ')}.` : 'Nothing is stuck.'; vCap(text, a); vSay(a); log('console voice: stuck'); return true;
+    }
+    let lm = n.match(/^(?:leave|stop nudging|don t nudge|do not nudge) (.+)$/), lf = lm && findSession(lm[1].split(' '), true);
+    if (lf) { auto.leave(lf.s.sessionId); const a = `Theseus will leave ${lf.s.title} alone.`; vCap(text, a); vSay(a); log(`console voice: leave "${lf.s.title}"`); feedOut(); return true; }
     let m = n.match(/^(park|resume|unpark|swap|don t swap|do not swap|skip the swap for|skip swap for) (.+)$/), act = null, f = null;
     if (m) { act = { park: 'park', resume: 'resume', unpark: 'resume', swap: 'swap' }[m[1]] || 'noswap'; f = findSession(m[2].split(' '), true); }
     else if ((m = n.match(/^(.+?) (?:next|first)$/))) { act = 'first'; f = findSession(m[1].split(' '), true); }
@@ -2236,6 +2654,7 @@ if (gotLock) app.whenReady().then(() => {
     if (/^(always allow|allow|deny|approve|accept|reject) /.test(n) && voiceWait(text, n)) return true;
     if (voiceTiles(text, n)) return true;
     if (settings.manageOn && voiceManage(text, n)) return true;
+    if (voiceProject(text)) return true;
     if (voiceNew(text, n)) return true;
     if (voiceOpen(text, n)) return true;
     if ((m = n.match(/^what (did|has|does) (.+?) (say|said|says|replied|reply)$/))) {
@@ -2286,6 +2705,13 @@ if (gotLock) app.whenReady().then(() => {
     throw new Error(`No session called "${title}". Sessions: ${all.slice(0, 40).map(s => s.title).join('; ')}`);
   }
   // a project folder by name (spoken or written) -> its folder, or throws with the ones to pick from
+  // a waiting backlog task by (part of) its text, for voice: "drop the hand solver task"
+  function taskOf(name) {
+    const ts = auto.backlog.list().filter(t => t.state === 'waiting'), t = norm(String(name || ''));
+    const best = ts.map(x => ({ x, sc: norm(x.text).includes(t) ? 1 : sim(t, norm(x.text)) })).sort((a, b) => b.sc - a.sc)[0];
+    if (best && best.sc >= 0.5) return best.x;
+    throw new Error(`No waiting backlog task like "${name}". Waiting: ${ts.map(x => x.title).join('; ') || 'none'}`);
+  }
   function projectOf(name) {
     const fl = folders(), t = norm(name);
     const best = fl.map(fo => ({ fo, sc: sim(t, norm(fo.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'))) })).sort((a, b) => b.sc - a.sc)[0];
@@ -2331,6 +2757,7 @@ if (gotLock) app.whenReady().then(() => {
       const cur = (lastFeed.sessions || []).find(x => x.sessionId === s.sessionId), act = cur && cur.activity, age = Date.now() - t0;
       if (act === 'working') w.seen = true;
       if (recWatch !== w) return clearInterval(w.t);
+      if (!(rState && rState.recording)) { clearInterval(w.t); recWatch = null; return; }   // stopped by hand: a later recording is not this one's
       if (!((w.seen && act !== 'working') || age > 30 * 60000 || (!w.seen && age > 3 * 60000))) return;
       clearInterval(w.t); recWatch = null;
       if (rState && rState.recording) try { await acts.recStop(); log(`ask tool: recording of "${s.title}" stopped (${Math.round(age / 1000)} s)`); vCap('', `Recording of ${s.title} saved.`); } catch (e) { log('ask tool: recording stop failed: ' + (e && e.message)); }
@@ -2340,7 +2767,7 @@ if (gotLock) app.whenReady().then(() => {
     list_sessions: listSessions, read_session: readSession, search_sessions: searchSessions,
     open_session: a => { const s = sessOf(a.session); showWin(); toWin('voice-open', { sessionId: s.sessionId }); return `Opened ${s.title}.`; },
     new_session_form: a => {
-      if (!settings.appControl) throw new Error('App control is off (General settings): sessions cannot be started.');
+      if (!settings.appControl) throw new Error('App control is off (Session Management): sessions cannot be started.');
       const fo = a.project ? projectOf(a.project) : null; showWin(); toWin('voice-open', { sessionId: null, folder: fo }); return 'The form is open' + (fo ? ` with ${fo} picked.` : '.');
     },
     open_file: async a => {
@@ -2359,9 +2786,15 @@ if (gotLock) app.whenReady().then(() => {
     },
     record_until_idle: async a => { const s = sessOf(a.session); await recordUntilIdle(s); return `Recording now; it stops by itself when ${s.title} stops working.`; },
     start_session: a => {
-      if (!settings.appControl) throw new Error('App control is off (General settings): sessions cannot be started.');
+      if (!settings.appControl) throw new Error('App control is off (Session Management): sessions cannot be started.');
       const fo = projectOf(a.project), task = String(a.task || '').trim(); if (!task) throw new Error('no task given');
       return queue({ what: `New session in ${fo}: ${task}`, spoken: `New session in ${fo}.`, act: () => sessionNew(fo, null, task).then(r => { if (r.ok) openStarted(r); return done_(r.ok, `Started ${r.title} in ${fo}.`, `Not started: ${r.why}`); }) });
+    },
+    create_project: a => {
+      const name = String(a.name || '').trim(); if (!name) throw new Error('no project name given');
+      const folder = String(a.folder || '').trim() || path.join(PP.projects, name.replace(/[^\w .-]/g, '').trim());
+      return queue({ what: `New project "${name}" in ${folder} (creates its manager)`, spoken: `New project ${name}.`,
+        act: () => createProject(name, folder, true).then(r => done_(r.ok, `Project ${name} created; ${r.title || 'its manager'} is starting.`, `Not created: ${r.why}`)) });
     },
     send_message: a => {
       const s = sessOf(a.session), t = String(a.text || '').trim(); if (!t) throw new Error('no text given');
@@ -2370,8 +2803,10 @@ if (gotLock) app.whenReady().then(() => {
     send_screenshot: a => {
       const s = sessOf(a.session), t = String(a.text || '').trim();
       return queue({ what: `Screenshot to ${s.title}${t ? ': ' + t : ''}`, spoken: `Screenshot to ${s.title}.`, act: async () => {
-        const f = await acts.screenshot(); if (!f) { done_(false, '', 'No screenshot was taken.'); return; }
-        const r = await sessionAttach(s.sessionId, [f], [], t); done_(r.ok, `Screenshot sent to ${s.title}.`, `Not sent: ${r.why}`);
+        try {
+          const f = await acts.screenshot(); if (!f) { done_(false, '', 'No screenshot was taken.'); return; }
+          const r = await sessionAttach(s.sessionId, [f], [], t); done_(r.ok, `Screenshot sent to ${s.title}.`, `Not sent: ${r.why}`);
+        } catch (e) { done_(false, '', `Not sent: ${(e && e.message) || 'the screenshot failed'}`); }
       } });
     },
     respond: a => {
@@ -2399,6 +2834,23 @@ if (gotLock) app.whenReady().then(() => {
       } });
     },
     stop_session: a => queue({ stop: sessOf(a.session) }),
+    // the backlog (Autonomy part 3): adding, listing and dropping act at once; starting one now is queued like start_session
+    // the digest ("what happened"): shown on the card at once; the text is Ask's to sum up
+    digest: a => auto.digest(lastFeed.sessions || [], Number(a.hours) > 0 ? Math.min(14 * 24, Number(a.hours)) : 0).then(d => { if (alive(win)) win.webContents.send('digest', d); return d.text; }),
+    backlog_add: a => {
+      const fo = projectOf(a.project), r = auto.backlog.add({ folder: fo, text: a.task, nightOnly: !!a.night_only }); if (!r.ok) throw new Error(r.why);
+      return `Added to the backlog in ${fo}: ${r.task.title}.` + (auto.backlog.on() ? '' : ' The backlog is off (Session Management > Task backlog), so it will not start by itself.');
+    },
+    backlog_list: () => {
+      const ts = auto.backlog.list().filter(t => t.state !== 'done');
+      return ts.length ? ts.map((t, i) => `${i + 1}. ${t.text} (${t.folder}; ${t.state === 'started' ? 'started' : t.nightOnly ? 'waiting, night only' : 'waiting'})`).join('\n') : 'The backlog is empty.';
+    },
+    backlog_drop: a => { const t = taskOf(a.task); auto.backlog.remove(t.id); return `Dropped from the backlog: ${t.title}.`; },
+    backlog_start: a => {
+      if (!settings.appControl) throw new Error('App control is off (Session Management): sessions cannot be started.');
+      const t = taskOf(a.task);
+      return queue({ what: `Start backlog task in ${t.folder}: ${t.title}`, spoken: `Start ${t.title}.`, act: () => auto.backlog.startNow(t.id).then(r => done_(r.ok, `Started ${r.title} in ${t.folder}.`, `Not started: ${r.why}`)) });
+    },
     pc: async a => { const c = PC_ACTS[a.action]; if (!c) throw new Error('unknown action'); const r = await runCommand({ cmd: c, text: '(ask)', confidence: 1, wake: true, quiet: true }); return c === 'status' ? r : 'Done.'; },
     set_mode: async a => {
       if (!MODES.includes(a.mode)) throw new Error('mode must be one of ' + MODES.join(', '));
@@ -2413,6 +2865,7 @@ if (gotLock) app.whenReady().then(() => {
     let cwd = ''; try { cwd = decodeURIComponent(String(h['x-sphere-cwd'] || '')); } catch {}
     return { s: s || null, title: s ? s.title : cwd ? path.basename(cwd) : 'A session' };
   }
+  const focusLine = s => s.on ? `on${s.until ? ' until ' + s.until : ' (no end)'}, level ${s.level || 'custom'}${s.setBy ? ', set by ' + s.setBy : ''}` : 'off';
   const clip = (t, n = 300) => { t = String(t || '').replace(/\0/g, '').replace(/\s+/g, ' ').trim(); if (!t) throw new Error('no text given'); return t.length > n ? t.slice(0, n) + '…' : t; };
   const SESS_RUN = {
     speak: (a, me) => {
@@ -2429,12 +2882,50 @@ if (gotLock) app.whenReady().then(() => {
       const note = clip(a.note, 120); attn.set(String(me.s.sessionId), { note, at: Date.now() }); feedOut();
       vCap('', `${me.title} needs you: ${note}`); return 'The tile shows that this session needs the user.';
     },
+    swap_me: (a, me) => {   // a session's own swap goes through the manager, so the fresh conversation gets the reprompt
+      if (!me.s) throw new Error('This session is not on the sphere.');
+      const r = mgr.swapNow(me.s.sessionId, null, true); if (!r.ok) throw new Error(`Theseus can't swap this session: ${r.why}.`);
+      return 'Theseus will clear-swap this session: end your turn now and follow its Clear-swap message.';
+    },
     list_sessions: listSessions, read_session: readSession, search_sessions: searchSessions,
+    // default: working / waiting ones and those active in the last 12 h, not Parked, Ungrouped or old; all: every one not archived or old
+    sessions_live: a => (lastFeed.sessions || []).filter(s => {
+      if (!s.title || /\(old\b/i.test(s.title) || /archiv/i.test(s.group || '')) return false;
+      if (a.all) return true;
+      if (s.group === 'Parked' || s.group === 'Ungrouped') return false;
+      if (s.activity === 'working' || s.activity === 'waiting' || attn.has(String(s.sessionId))) return true;
+      const f = transcriptOf(s.sessionId); try { return f && Date.now() - fs.statSync(f).mtimeMs < 12 * 3600e3; } catch { return false; }
+    }).map(s => {
+      const at = attn.get(String(s.sessionId)), md = settingsOf(s.sessionId).mode;
+      return [s.title, at ? 'waiting' : s.activity || 'idle', s.pct != null ? Math.round(s.pct * 100) + '%' : '-', md || '-', s.group || '-'].join(' | ');
+    }).join('\n') || 'No live sessions.',
+    mode_get: () => `${curMode.mode || 'unknown'}${curMode.pending && curMode.pending !== curMode.mode ? ` (requested: ${curMode.pending})` : ''}`,
+    focus_get: () => focusLine(focus.state()),
+    focus_set: (a, me) => {
+      const m = Number(a.minutes), st = a.on ? focus.set(true, { until: m > 0 ? Date.now() + Math.min(m, 7 * 1440) * 60000 : null, level: a.level, setBy: 'session' }) : focus.set(false, { setBy: 'session' });
+      log(`focus set by ${me.title}`); return focusLine(st);
+    },
+    swap_status: () => {
+      const st = mgr.state(), t = id => ((lastFeed.sessions || []).find(x => String(x.sessionId) === String(id)) || {}).title || id;
+      const sw = Object.entries(st.swaps).map(([id, stage]) => `${t(id)} (${stage})`);
+      return [`management: ${st.on ? 'on' : 'off'}${st.outside ? ' (another manager holds swaps)' : ''}`, `mode: ${st.mode || 'unknown'}`, `swapping: ${sw.join(', ') || 'none'}`, `parked queue: ${st.queue.map(t).join(', ') || 'empty'}`].join('\n');
+    },
+    park: async (a, me) => {
+      if (!settings.sessionsMessage) throw new Error('The user has not allowed Theseus messaging between sessions (Session Management); park and unpark need it.');
+      if (!mgr.on()) throw new Error('Session management is off (Theseus settings).');
+      const s = sessOf(a.session); if (me.s && s.sessionId === me.s.sessionId) throw new Error('That is this session.');
+      const r = await mgr.park(s.sessionId); if (!r.ok) throw new Error(r.why); return `Parked ${s.title}${r.why ? ` (${r.why})` : ''}.`;
+    },
+    unpark: async (a, me) => {
+      if (!settings.sessionsMessage) throw new Error('The user has not allowed Theseus messaging between sessions (Session Management); park and unpark need it.');
+      if (!mgr.on()) throw new Error('Session management is off (Theseus settings).');
+      const s = sessOf(a.session), r = await mgr.resume(s.sessionId, 'by ' + me.title); if (!r.ok) throw new Error(r.why); return `Resumed ${s.title}.`;
+    },
     send_message: async (a, me) => {
-      if (!settings.sessionsMessage) throw new Error('The user has not allowed this Theseus tool (Theseus settings, "Sessions may message each other"). It covers only the Theseus send_message tool; the Claude app session messaging (SendMessage) is not affected.');
+      if (!settings.sessionsMessage) throw new Error('The user has not allowed this Theseus tool (Theseus: Session Management, "Theseus messaging between sessions"). It covers only the Theseus send_message tool; the Claude app session messaging (SendMessage) is not affected.');
       const s = sessOf(a.session); if (me.s && s.sessionId === me.s.sessionId) throw new Error('That is this session.');
       const t = String(a.text || '').trim(); if (!t) throw new Error('no text given');
-      const r = await sessionSend(s.sessionId, `[From ${me.title}] ${t}`); if (!r.ok) throw new Error(r.why);
+      const r = await sessionSend(s.sessionId, `[From ${me.title}] ${t}`, true); if (!r.ok) throw new Error(r.why);
       vCap('', `${me.title} to ${s.title}: ${clip(t, 200)}`); return `Sent to ${s.title}.`;
     },
   };
@@ -2604,7 +3095,67 @@ if (gotLock) app.whenReady().then(() => {
       { label: 'Reset strip position', enabled: !!settings.stripPos, click: () => applySettings({ stripPos: null }) },
     ];
   }
+  // ---- Echo (Echo_Spec): alerts on the Echo through Voice Monkey; the "ask Theseus" skill on 127.0.0.1:8787, public through
+  // Tailscale Funnel at /alexa. The Voice Monkey token is kept encrypted with safeStorage (never sent to the pages).
+  const echoToken = () => { try { return settings.echoTokenEnc && safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(settings.echoTokenEnc, 'base64')) : ''; } catch { return ''; } };
+  echo = require('./echo').create({ log, dataDir: app.getPath('userData'), settings: () => settings, token: echoToken, echoDir: () => P.voiceExt() ? P.echo() : '',
+    ffmpeg: P.ffmpeg, night: () => ['night', 'weekend'].includes(getMode().mode), name: NAME, whoNeeds: whoNeedsLine, whatIs: whatIsLine });
+  echo.setHost(settings.echoPublicHost || settings.echoHost);
+  async function echoSync() {
+    if (!settings.echoOn) { echo.stop(); return echo.status(); }
+    echo.start();
+    // echoPublicHost: another tunnel (ngrok) gives the public https name; Tailscale Funnel is left alone
+    if (settings.echoPublicHost) { echo.setHost(settings.echoPublicHost); return { ...echo.status(), funnel: { ok: true, host: settings.echoPublicHost, kept: true } }; }
+    const f = await echo.funnel();
+    if (f.host && f.host !== settings.echoHost) { echo.setHost(f.host); applySettings({ echoHost: f.host }); }
+    if (!f.ok) log('echo: funnel: ' + f.why);
+    return { ...echo.status(), funnel: f };
+  }
+  if (settings.echoOn && !ECHO_SHELVED) echoSync();
+  // the old EchoStatus parts: its hook in ~/.claude/settings.json and a running skill_server.py
+  const claudeSettings = path.join(app.getPath('home'), '.claude', 'settings.json');
+  const OLD_HOOK = /hk_echo_announce/;
+  function echoOld() { try { return OLD_HOOK.test(fs.readFileSync(claudeSettings, 'utf8')); } catch { return false; } }
+  // switch-over (the user's click after a good live test): back up settings.json, drop every hook entry that runs
+  // hk_echo_announce (and groups / events left empty), stop skill_server.py; the EchoStatus folder stays as it is
+  function echoReplace() {
+    let raw; try { raw = fs.readFileSync(claudeSettings, 'utf8'); } catch (e) { return { ok: false, why: 'settings.json not readable' }; }
+    let j; try { j = JSON.parse(raw.replace(/^﻿/, '')); } catch { return { ok: false, why: 'settings.json is not valid JSON' }; }
+    let removed = 0;
+    for (const ev of Object.keys(j.hooks || {})) {
+      const groups = (j.hooks[ev] || []).map(g => { const h = (g.hooks || []).filter(x => !OLD_HOOK.test(String(x.command || ''))); removed += (g.hooks || []).length - h.length; return { ...g, hooks: h }; }).filter(g => g.hooks.length);
+      if (groups.length) j.hooks[ev] = groups; else delete j.hooks[ev];
+    }
+    if (removed) {
+      const bak = claudeSettings.replace(/\.json$/, `.before-theseus-echo-${new Date().toISOString().slice(0, 10)}.json`);
+      try { fs.writeFileSync(bak, raw); writeAtomic(claudeSettings, JSON.stringify(j, null, 2)); } catch (e) { return { ok: false, why: 'could not write settings.json: ' + (e && e.message) }; }
+      log(`echo: removed ${removed} old hook entries (backup ${bak})`);
+    }
+    execFile('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name like 'py%.exe'\" | ? { $_.CommandLine -match 'skill_server\\.py' } | % { Stop-Process -Id $_.ProcessId -Force }"], { windowsHide: true }, () => { if (settings.echoOn) echoSync(); });
+    applySettings({ echoReplaced: true });
+    return { ok: true, removed };
+  }
+  ipcMain.handle('echo', async (e, a) => {
+    if (!fromSettings(e) || !a || typeof a !== 'object') return { ok: false, why: 'bad request' };
+    switch (a.cmd) {
+      case 'status': return { ok: true, ...echo.status(), token: !!echoToken(), old: echoOld() };
+      case 'token': {   // a new Voice Monkey token ('' clears it)
+        const t = typeof a.token === 'string' ? a.token.trim() : '';
+        if (t && (!/^[\w.-]{8,200}$/.test(t))) return { ok: false, why: 'That does not look like a Voice Monkey token.' };
+        if (t && !safeStorage.isEncryptionAvailable()) return { ok: false, why: 'Windows encryption is not available.' };
+        applySettings({ echoTokenEnc: t ? safeStorage.encryptString(t).toString('base64') : '' });
+        return { ok: true, token: !!t };
+      }
+      case 'test': return echo.test();
+      case 'funnel': return echoSync();
+      case 'replace': return echoReplace();
+    }
+    return { ok: false, why: 'unknown' };
+  });
+
   function onSettingsChanged(p) {
+    if ('echoOn' in p && !ECHO_SHELVED) echoSync().catch(e => log('echo: ' + (e && e.message)));
+    rulesState();
     if ('strip' in p) syncStrip();
     if ('stripPos' in p) placeStrip();
     if ('sysReadout' in p || 'sysAlerts' in p) { if (needSys()) refreshSys(true); }
@@ -2636,10 +3187,10 @@ if (gotLock) app.whenReady().then(() => {
   setInterval(() => { const k = JSON.stringify(P.addons()); if (k !== addonKey) { addonKey = k; pushSettings(); onSettingsChanged({ addons: true }); } }, 20000);
 
   // ---- test hooks: STRIP_SHOTS="<dir>;<count>;<ms apart>" pictures of the strip / toast / settings windows (first after 6 s);
-  // STRIP_SCRIPT="3000:muteMic,5000:voice:status,6000:voice:mode:worker,9000:ask:q1.wav" runs actions at those times (ask: a wave in %TEMP%SessionSphere, ask:<wav>:<cmd> as an unsure command; askq:<text> a typed question; send:<sessionId>:<text> types into that session, SPHERE_SEND_OK=1 needed; vnew:<id>:<title> opens a just-started session's card; hear:<wav in SPHERE_USERDATA> listens to that file as the mic, always mode); chat:<cmd>[:<arg>] / chatq:<text> as heard in an open voice chat window (ignored when it is closed)
+  // STRIP_SCRIPT="3000:muteMic,5000:voice:status,6000:voice:mode:worker,9000:ask:q1.wav" runs actions at those times (ask: a wave in %TEMP%Theseus, ask:<wav>:<cmd> as an unsure command; askq:<text> a typed question; fx:in|out:<kind> plays a start or close animation; send:<sessionId>:<text> types into that session, SPHERE_SEND_OK=1 needed; vnew:<id>:<title> opens a just-started session's card; hear:<wav in SPHERE_USERDATA> listens to that file as the mic, always mode); chat:<cmd>[:<arg>] / chatq:<text> as heard in an open voice chat window (ignored when it is closed)
   if (process.env.STRIP_SCRIPT) for (const it of process.env.STRIP_SCRIPT.split(',')) {
     const [ms, kind, a, b] = it.split(':');
-    setTimeout(() => { if (kind === 'askq') onQuestion({ text: a, test: true }); else if (kind === 'ask') { const s = path.join(app.getPath('temp'), 'SessionSphere', a), d = s + '.' + Date.now() + '.wav'; fs.copyFileSync(s, d); onQuestion({ wav: d, guess: b ? { cmd: b, arg: '', text: 'Theseus ' + b, confidence: 0.69, wake: true } : undefined }); } else if (kind === 'say') { const t = a, n = norm(t); log('say test: ' + t); if (!voicePending(n)) voiceSession(t, n).then(r => log('say test handled: ' + r)); } else if (kind === 'hear' && audio) { settings.voiceCmd = 'always'; audio.testInput(path.join(process.env.SPHERE_USERDATA || '', a)).then(() => audio.ask(askOn())).then(() => { listenNow(); log('hear test: ' + a + ', ask ' + askOn()); }); } else if (kind === 'vnew') openStarted({ sessionId: 'new:' + a, title: b }); else if (kind === 'send') sessionSend(a, b || null).then(r => log('send test: ' + JSON.stringify(r))); else if (kind === 'js' && process.env.SPHERE_USERDATA) win.webContents.executeJavaScript(fs.readFileSync(path.join(process.env.SPHERE_USERDATA, a), 'utf8')).then(r => log('js test: ' + JSON.stringify(r)), e => log('js test failed: ' + e.message)); else if (kind === 'voice') runCommand({ cmd: a, arg: b, text: 'test', confidence: 1, wake: true }); else if (kind === 'chat' || kind === 'chatq') { if (!chat.listening) log(`chat test: not listening, "${a}" ignored`); else if (kind === 'chat') runCommand({ cmd: a, arg: b, text: 'chat test', confidence: 1, wake: false, chat: true }); else onQuestion({ text: a, test: true, follow: true }); } else act(kind, a ? (isNaN(+a) ? a : +a) : undefined); }, +ms);
+    setTimeout(() => { if (kind === 'askq') onQuestion({ text: a, test: true }); else if (kind === 'fx') playFx(a, b); else if (kind === 'ask') { const s = path.join(app.getPath('temp'), 'Theseus', a), d = s + '.' + Date.now() + '.wav'; fs.copyFileSync(s, d); onQuestion({ wav: d, guess: b ? { cmd: b, arg: '', text: 'Theseus ' + b, confidence: 0.69, wake: true } : undefined }); } else if (kind === 'say') { const t = a, n = norm(t); log('say test: ' + t); if (!voicePending(n)) voiceSession(t, n).then(r => log('say test handled: ' + r)); } else if (kind === 'hear' && audio) { settings.voiceCmd = 'always'; audio.testInput(path.join(process.env.SPHERE_USERDATA || '', a)).then(() => audio.ask(askOn())).then(() => { listenNow(); log('hear test: ' + a + ', ask ' + askOn()); }); } else if (kind === 'vnew') openStarted({ sessionId: 'new:' + a, title: b }); else if (kind === 'send') sessionSend(a, b || null).then(r => log('send test: ' + JSON.stringify(r))); else if (kind === 'js' && process.env.SPHERE_USERDATA) win.webContents.executeJavaScript(fs.readFileSync(path.join(process.env.SPHERE_USERDATA, a), 'utf8')).then(r => log('js test: ' + JSON.stringify(r)), e => log('js test failed: ' + e.message)); else if (kind === 'voice') runCommand({ cmd: a, arg: b, text: 'test', confidence: 1, wake: true }); else if (kind === 'chat' || kind === 'chatq') { if (!chat.listening) log(`chat test: not listening, "${a}" ignored`); else if (kind === 'chat') runCommand({ cmd: a, arg: b, text: 'chat test', confidence: 1, wake: false, chat: true }); else onQuestion({ text: a, test: true, follow: true }); } else act(kind, a ? (isNaN(+a) ? a : +a) : undefined); }, +ms);
   }
   if (process.env.STRIP_SHOTS) {
     const [dir, count = 1, ms = 1000] = process.env.STRIP_SHOTS.split(';'); let i = 0;
@@ -2660,29 +3211,89 @@ if (gotLock) app.whenReady().then(() => {
   // session management (SessionManagement_Spec): groups / swap line applied to each feed, the engine ticks on it
   mgr = require('./manage').create({
     settings: () => settings, dir: app.getPath('userData'), log,
-    send: (id, text) => sessionSend(id, text), manage: (id, act, name) => sessionManage(id, act, name), newSession: (folder, model, text) => sessionNew(folder, model, text),
+    send: (id, text) => { if (auto && !/^Park:/.test(text)) auto.expect(id); return sessionSend(id, text, true); }, manage: (id, act, name) => sessionManage(id, act, name), capAdj: () => auto ? auto.capAdj() : 0, newSession: (folder, model, text) => sessionNew(folder, model, text),
     transcriptOf, setMoved: (id, f) => moved.set(id, f), bornOf: id => { const f = transcriptOf(id); return f ? born(f) : -1; },
     awaiting: id => awaiting.get(id) === true || attn.has(String(id)), blocked: () => !!(overlay || opening),
-    cap: text => vCap('', text), say: text => { if (settings.askSpeak) say(text); }, modeChanged: () => {},
-    changed: () => { if (settings.manageOn) { lastFeed = mgr.apply(rawFeed || lastFeed); feedOut(); } },
+    cap: text => vCap('', text), say: text => { if (settings.manageSpeak) say(text); }, modeChanged: modeToManager, focus: () => focus.active(), swapped: title => { if (auto) auto.note('swap', title); },   // manageSpeak: Session Management > Spoken alerts > Swaps
+    changed: () => { if (settings.manageOn) { lastFeed = auto ? auto.apply(mgr.apply(rawFeed || lastFeed)) : mgr.apply(rawFeed || lastFeed); feedOut(); } },
   });
+  // autonomy (Autonomy_Spec): stall recovery now; its tick follows the feed and every 20 s
+  auto = require('./autonomy').create({
+    settings: () => settings, dir: app.getPath('userData'), log, send: (id, text) => sessionSend(id, text, true),
+    awaiting: id => awaiting.get(id) === true || attn.has(String(id)), blocked: () => !!(overlay || opening),
+    transcriptOf, signals: f => require('./transcripts').stallSignals(f), git: { changes: d => require('./repo').changes(d), lastCommit: d => require('./repo').lastCommit(d), log: (d, t) => require('./repo').logSince(d, t) }, cpOf: s => mgr.cpOf(s), swapNow: id => mgr.swapNow(id),
+    cap: text => vCap('', text), say: text => { if (settings.manageSpeak && !focus.active()) say(text); }, focus: () => focus.active(),
+    usage: () => claudeUi.send({ cmd: 'usage' }), park: id => mgr.park(id),   // usage pacing: the app's Usage button; park at the limit
+    // the backlog: a new session in the task's folder, the room under the cap, the session named after its task
+    newSession: (folder, text) => sessionNew(folder, null, text), room: () => mgr.room(), rename: (id, t) => sessionManage(id, 'rename', t),
+    // away alerts and the digest: the PC's idle time; the morning digest goes to the card
+    idleMs: () => powerMonitor.getSystemIdleTime() * 1000, digest: d => { if (alive(win)) win.webContents.send('digest', d); },
+    changed: () => { if (settings.manageOn) { lastFeed = auto.apply(mgr.apply(rawFeed || lastFeed)); feedOut(); } },
+  });
+  setInterval(() => auto.tick(lastFeed), 20000);
   // update button (UpdateButton_Spec): the sphere pill, tray item and Settings button show only once an update is ready;
   // the install waits for swaps, then quits the normal way (close animation, the Claude window put back)
   const updState = () => ({ ...(updater ? updater.state() : { kind: 'none' }), current: app.getVersion(), dev: !app.isPackaged, waiting: updWait });
   const updOut = () => { const s = updState(); for (const w of [settingsWin, win]) if (alive(w)) w.webContents.send('update', s); trayDirty(); };
-  updater = require('./updater').create({ log, dev: !app.isPackaged, root: path.join(__dirname, '..'), version: app.getVersion(), onState: updOut });
+  updater = require('./updater').create({ log, dev: !app.isPackaged, root: path.join(__dirname, '..'), version: app.getVersion(), release: CHANNEL !== 'test', onState: updOut });
   updater.start();
   async function updInstall() {
     const k = updater.state().kind; if (k === 'none') return { ok: false, why: 'no update is waiting' };
     if (updWait) return { ok: true };
     updWait = true; updOut(); log(`update: install (${k}), after any swap`);
-    while (Object.keys(mgr.state().swaps).length) await new Promise(r => setTimeout(r, 5000));
-    updater.apply(app); return { ok: true };
+    try {
+      const t0 = Date.now();   // a swap that never ends holds the update 30 min at most
+      while (Object.keys(mgr.state().swaps).length && Date.now() - t0 < 30 * 60000) await new Promise(r => setTimeout(r, 5000));
+      if (updater.apply(app) === false) throw new Error('the update changed meanwhile');
+      return { ok: true };
+    } catch (e) { updWait = false; updOut(); log('update: install failed: ' + (e && e.message)); return { ok: false, why: (e && e.message) || 'the update failed' }; }
   }
   ipcMain.handle('update-state', e => fromUi(e) ? updState() : null);
   ipcMain.handle('update-install', e => fromUi(e) ? updInstall() : { ok: false, why: 'bad call' });
   ipcMain.handle('update-check', async e => { if (!fromUi(e)) return null; await updater.check(); return updState(); });
   rulesI = require('./rules').create({ claudeDir: P.claudeDir, dir: app.getPath('userData'), log });
+  srules = require('./sessionrules').create({ claudeDir: P.claudeDir, dir: app.getPath('userData'), src: path.join(__dirname, '..', 'mod'), log });
+  srules.sync(); rulesState(); setInterval(rulesState, 30000);   // the mode can change outside Theseus (the mode folder)
+  // land review verdicts (ReviewVerdicts_Spec): a FAIL report's card goes on the session working in that branch's worktree, else on the manager's tile
+  const RV = require('./reviews'), cwdMemo = new Map();   // sessionId -> { file, dir } (cwdOf reads up to 1 MB)
+  const rvDir = s => { const id = String(s.sessionId), f = transcriptOf(id); if (!f) return ''; const m = cwdMemo.get(id); if (m && m.file === f) return m.dir; const d = require('./compose').cwdOf(f); cwdMemo.set(id, { file: f, dir: d }); return d; };
+  let rvBusy = false;
+  async function reviewMap() {
+    if (rvBusy || !reviews) return; rvBusy = true;
+    try {
+      const cards = reviews.cards(), next = new Map();
+      if (cards.length) {
+        const ss = (lastFeed.sessions || []).filter(s => s.title && !s.archived), mid = rulesStateOf().managerId;
+        for (const c of cards.sort((a, b) => a.at < b.at ? 1 : -1)) {   // (the newest wins a tile that owns two branches)
+          const wt = await RV.worktreeOf(settings.reviewsDir, c.branch);
+          const s = (wt && ss.find(x => RV.within(rvDir(x), wt))) || ss.find(x => String(x.sessionId) === mid) || ss.find(x => x.group === 'Session Manager' && !/\(old\b/i.test(x.title));
+          if (s && !next.has(String(s.sessionId))) next.set(String(s.sessionId), c);
+        }
+      }
+      for (const id of cwdMemo.keys()) if (!(lastFeed.sessions || []).some(x => String(x.sessionId) === id)) cwdMemo.delete(id);
+      if (JSON.stringify([...next]) !== JSON.stringify([...revOn])) { revOn.clear(); for (const [k, v] of next) revOn.set(k, v); feedOut(); }
+    } catch (e) { log('reviews: ' + (e && e.message)); } finally { rvBusy = false; }
+  }
+  reviews = RV.create({ dir: () => settings.reviewsDir, stateFile: path.join(app.getPath('userData'), 'reviews.json'), log, onChange: reviewMap,
+    onFail: async c => {   // once per new FAIL: "<title>'s land review failed", as the other spoken alerts
+      await reviewMap(); if (!settings.alertReview) return;
+      const id = [...revOn].find(([, v]) => v.branch === c.branch), s = id && (lastFeed.sessions || []).find(x => String(x.sessionId) === id[0]);
+      const line = `${s ? String(s.title).replace(/\s*\([^)]*\)\s*$/, '') + "'s" : 'A'} land review failed.`; log('alert: ' + line);
+      vCap('', line); if (settings.askSpeak) chatPause(say(line));
+    } });
+  setInterval(reviewMap, 30000); reviewMap();   // sessions open and close, and a worktree changes branch
+  // ContextLimits_Spec: the folders whose settings.local.json get a window: the manager's, and every other feed session's (none
+  // without a manager feed: all sessions are Other then)
+  function ctxFolders() {
+    const out = { manager: [], worker: [] }, ss = (rawFeed && Array.isArray(rawFeed.sessions) && P.feed()) ? rawFeed.sessions : [], mid = rulesStateOf().managerId;
+    for (const s of ss) {
+      if (s.archived || s.reader) continue;
+      const t = transcriptOf(String(s.sessionId)), d = t && require('./compose').cwdOf(t); if (!d) continue;
+      const k = String(s.sessionId) === mid || s.group === 'Session Manager' ? 'manager' : 'worker';
+      if (!out[k].some(x => x.toLowerCase() === d.toLowerCase())) out[k].push(d);
+    }
+    return out;
+  }
   ipcMain.handle('manage-act', async (e, a) => {
     if (!(fromWin(e) || fromSettings(e)) || !a || typeof a !== 'object') return { ok: false, why: 'bad call' };
     const id = typeof a.id === 'string' && SID.test(a.id) ? a.id : null;
@@ -2692,19 +3303,37 @@ if (gotLock) app.whenReady().then(() => {
       case 'first': case 'last': return id ? mgr.order(id, a.act) : { ok: false, why: 'bad session' };
       case 'swap': case 'swapnew': return id ? mgr.swapNow(id, a.act === 'swapnew' ? 'new' : null) : { ok: false, why: 'bad session' };
       case 'noswap': return id ? mgr.noSwap(id) : { ok: false, why: 'bad session' };
+      // land review cards (ReviewVerdicts_Spec): the report opens like a Files tab file (the editor, or its folder); Dismiss clears it for good
+      case 'review-report': { const f = reviews && typeof a.branch === 'string' && reviews.file(a.branch); if (!f) return { ok: false, why: 'no report for that branch' };
+        return require('./bridge').openFile(path.dirname(f), path.basename(f), 1, settings.editor, settings.editorCmd, shell); }
+      case 'review-dismiss': return reviews && typeof a.branch === 'string' && reviews.dismiss(a.branch) ? { ok: true } : { ok: false, why: 'no card for that branch' };
+      // the backlog (Autonomy part 3): its card in the sphere window and Settings' "Open the backlog"
+      case 'backlog-list': return { ok: true, on: auto.backlog.on(), tasks: auto.backlog.list(), folders: folders(), appControl: !!settings.appControl };
+      case 'backlog-add': return auto.backlog.add({ folder: a.folder, text: a.text, nightOnly: !!a.nightOnly });
+      case 'backlog-drop': return typeof a.task === 'string' ? auto.backlog.remove(a.task) : { ok: false, why: 'bad task' };
+      case 'backlog-move': return typeof a.task === 'string' && ['up', 'down', 'first', 'last'].includes(a.where) ? auto.backlog.move(a.task, a.where) : { ok: false, why: 'bad task' };
+      case 'backlog-start': return typeof a.task === 'string' ? auto.backlog.startNow(a.task) : { ok: false, why: 'bad task' };
+      case 'digest': return auto.digest(lastFeed.sessions || [], Number(a.hours) > 0 ? Math.min(14 * 24, Number(a.hours)) : 0).then(d => { if (a.show && alive(win)) win.webContents.send('digest', d); return { ok: true, digest: d }; });
+      case 'digest-last': return { ok: true, digest: auto.lastDigest() };
+      case 'alerts': return { ok: true, alerts: auto.alerts() };
+      case 'backlog-open': if (win && !win.isDestroyed()) win.webContents.send('backlog-open'); return { ok: true };
       case 'cancel': return { ok: mgr.cancel() };
       case 'state': return mgr.state();
       case 'log': return mgr.logLines(200);
       case 'rules-status': return rulesI.status();
-      case 'rules-plan': { const p = rulesI.plan(settings.compactWindow); return p.err ? { err: p.err } : { md: p.md.after, js: p.js.after, mdFile: p.md.file, jsFile: p.js.file }; }
-      case 'rules-install': return fromSettings(e) ? rulesI.install(settings.compactWindow) : { ok: false, why: 'from the settings card only' };
+      case 'rules-plan': { const p = rulesI.plan(settings.compactWindows, ctxFolders()); return p.err ? { err: p.err } : { md: p.md.after, js: p.js.after, mdFile: p.md.file, jsFile: p.js.file, local: p.local.map(x => ({ file: x.file, kind: x.kind, after: x.after })), skipped: p.skipped }; }
+      case 'rules-install': return fromSettings(e) ? rulesI.install(settings.compactWindows, ctxFolders()) : { ok: false, why: 'from the settings card only' };
       case 'rules-remove': return fromSettings(e) ? rulesI.remove() : { ok: false, why: 'from the settings card only' };
+      case 'srules-status': return srules.status();
+      case 'srules-plan': { const p = srules.plan(); return p.err ? { err: p.err } : { js: p.after, jsFile: p.file }; }
+      case 'srules-install': return fromSettings(e) ? srules.install(rulesStateOf()) : { ok: false, why: 'from the settings card only' };
+      case 'srules-remove': return fromSettings(e) ? srules.remove() : { ok: false, why: 'from the settings card only' };
     }
     return { ok: false, why: 'unknown action' };
   });
   // a moved transcript (rewind, clear-swap) counts for the tiles' tokens and activity too, until the feed names a newer one
   feed.setResolve((id, f) => { const mv = moved.get(id); return mv && born(mv) >= 0 && !(born(f) >= born(mv)) ? mv : f; });
-  feed.watch(f => { rawFeed = f; lastFeed = mgr.apply(f); attnTidy(); cycleVoice(f); feedOut(); mgr.tick(); });
+  feed.watch(f => { rawFeed = f; lastFeed = auto.apply(mgr.apply(f)); attnTidy(); cycleVoice(f); feedOut(); mgr.tick(); auto.tick(lastFeed); rulesState(); });
   // the renderer may still be loading when the first state comes (a line already playing at start): it gets the last one once loaded
   let lastTalk = null;
   voice.watch(on => { lastTalk = on; if (win && !win.isDestroyed() && !win.webContents.isLoading()) win.webContents.send('talking', on); });

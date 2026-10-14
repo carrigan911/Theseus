@@ -27,6 +27,7 @@
   #rec i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
   #rec.on { color: var(--red); background: rgba(239, 83, 80, .14); } #rec.on i { animation: blink 1s steps(2, start) infinite; }
   @keyframes blink { 50% { opacity: .25; } }
+  #focusBtn { color: var(--dim); } #focusBtn.on { color: var(--accent); background: rgba(217, 119, 87, .18); box-shadow: 0 0 6px rgba(217, 119, 87, .45); }
   #timer { font-variant-numeric: tabular-nums; }
   #meters { display: none; flex-direction: column; justify-content: center; gap: 3px; width: 30px; margin: 0 4px 0 2px; }
   #meters.on { display: flex; }
@@ -56,6 +57,9 @@
 <body>
 <div id="bar" class="pill">
   <button class="it" data-act="mode" id="modeBtn" title="Theseus mode (click: change)"><i class="dot" id="modeDot"></i><span id="modeName">-</span></button>
+  <button class="it" data-act="focus" id="focusBtn" title="Focus (click: set)">
+    <svg viewBox="0 0 24 24" width="13" height="13"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg>
+    <span id="focusName">Focus</span></button>
   <b class="sep"></b>
   <button class="it" data-act="out" id="out" title="Output (click: next, right-click: choose)">
     <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg>
