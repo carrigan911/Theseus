@@ -1,6 +1,6 @@
 {
   "name": "session-sphere",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "private": true,
   "description": "Theseus: a desktop overview of your Claude Code sessions (unofficial)",
   "main": "src/main.js",
